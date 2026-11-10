@@ -2,7 +2,6 @@
 // mobile, in one headless Chrome (CHROME names its binary); prints JSON lines
 // {path, scrollWidth, innerWidth, wide}: scrollWidth over innerWidth is a
 // horizontal scroll. PROFILE is an empty scratch directory for Chrome.
-// prints JSON lines {path, scrollWidth, innerWidth, wide:[...]}.
 import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 const [base, list, prof] = process.argv.slice(2);
