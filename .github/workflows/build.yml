@@ -1,0 +1,94 @@
+# pkg.xolang.org's build job (decision 0589). It has no secrets and a read
+# only token: it reads the index feed, fetches each new version through
+# proxy.xolang.org checked against sum.xolang.org, runs the released xo's
+# `xo doc --json` with no network, and uploads the rendered pages as an
+# artifact. Publishing to R2 is a separate job, added later with its own
+# bucket-scoped secret; module source is only ever parsed here.
+name: build
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      modules:
+        description: "path@version list (space separated) to build instead of the feed"
+        required: false
+        default: ""
+      std:
+        description: "render the xo release's std"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      XO_VERSION: ${{ vars.XO_VERSION || 'v0.46.0' }}
+      XO_SUMDB: ${{ vars.XO_SUMDB }}
+      MODULES: ${{ inputs.modules }}
+      STD: ${{ inputs.std }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Unit tests
+        run: python3 -E -s -m unittest discover -s tests -t .
+      - name: Install xo
+        run: scripts/install-xo.sh "$XO_VERSION" "$RUNNER_TEMP/xo"
+      - name: Allow a network namespace for xo doc
+        # Ubuntu 24.04 restricts unprivileged user namespaces; the builder
+        # runs `xo doc` under `unshare --net` so a module's parse has no network
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build
+        run: |
+          if [ -z "$XO_SUMDB" ]; then
+            echo "::notice::the repository variable XO_SUMDB (sum.xolang.org's verifier key) is not set; nothing built"
+            exit 0
+          fi
+          set -- --xo "$RUNNER_TEMP/xo/bin/xo" --work "$RUNNER_TEMP/work" --site site --state state \
+            --catalog https://pkg.xolang.org/catalog.json --sandbox unshare
+          for m in $MODULES; do set -- "$@" --module "$m"; done
+          if [ "$STD" = "true" ]; then set -- "$@" --std; fi
+          python3 -E -s -m builder.build "$@"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: site
+          path: site
+          if-no-files-found: ignore
+          retention-days: 7
+
+  heartbeat:
+    # GitHub turns off scheduled workflows after 60 days with no commit:
+    # one small commit a day keeps the schedule alive. It touches only
+    # state/heartbeat and never sees the build's output. When the publish
+    # job lands, this job commits the published feed position instead.
+    if: github.event_name == 'schedule'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Commit the day's heartbeat
+        run: |
+          day=$(date -u +%Y-%m-%d)
+          if [ "$(cat state/heartbeat 2>/dev/null)" = "$day" ]; then exit 0; fi
+          mkdir -p state
+          echo "$day" > state/heartbeat
+          git config user.name "pkgsite heartbeat"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/heartbeat
+          git commit -q -m "heartbeat $day"
+          git push -q origin HEAD:main
