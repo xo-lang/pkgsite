@@ -245,7 +245,7 @@ def main(argv=None):
     ap.add_argument("--work", required=True, help="scratch directory (module cache, xo's HOME)")
     ap.add_argument("--site", required=True, help="output directory")
     ap.add_argument("--state", default="state", help="directory of position.json")
-    ap.add_argument("--feed", default="https://index.xolang.org/index", help="index feed URL or a JSON lines file")
+    ap.add_argument("--feed", default="https://index.xolang.org/index", help="index feed URL, a JSON lines file, or none")
     ap.add_argument("--catalog", default="", help="catalog.json of earlier runs (URL or file); empty starts fresh")
     ap.add_argument("--proxy", default="https://proxy.xolang.org", help="XO_PROXY for fetching")
     ap.add_argument("--sumdb", default=os.environ.get("XO_SUMDB", ""), help="XO_SUMDB: <name>+<key id>+<public key>")
@@ -256,7 +256,8 @@ def main(argv=None):
     ap.add_argument("--advance", action="store_true", help="write the new feed position to --state")
     a = ap.parse_args(argv)
 
-    if not a.sumdb and not a.no_verify:
+    fetching = not (a.std and not a.module and a.feed == "none")
+    if fetching and not a.sumdb and not a.no_verify:
         ap.error("--sumdb (or XO_SUMDB) is required: versions are checked against the checksum log; --no-verify is for local tests")
     if a.sumdb and a.sumdb.strip() in ("off", ""):
         ap.error("--sumdb off: use --no-verify for local tests")
@@ -277,7 +278,7 @@ def main(argv=None):
             if not paths.valid_path(p) or not paths.valid_version(v):
                 ap.error("--module %r: want <path>@<version>" % m)
             todo.append((p, v, ""))
-    elif a.std:
+    elif a.std or a.feed == "none":
         todo = []
     else:
         todo = read_feed(a.feed, since)

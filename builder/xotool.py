@@ -23,6 +23,9 @@ class Tool:
         self.home = os.path.join(self.work, "home")
         self.modcache = os.path.join(self.work, "modcache")
         os.makedirs(self.home, exist_ok=True)
+        self.netns = []
+        if sandbox == "unshare":
+            self.netns = no_network_prefix()
 
     def env(self, offline):
         e = {
@@ -42,10 +45,12 @@ class Tool:
 
     def run(self, args, cwd, offline, timeout):
         cmd = [self.xo] + args
-        if offline and self.sandbox == "unshare":
-            # no network at all for the parse: a user and network namespace
-            cmd = ["unshare", "--user", "--map-root-user", "--net", "--"] + cmd
-        return subprocess.run(cmd, cwd=cwd, env=self.env(offline), capture_output=True, timeout=timeout)
+        env = self.env(offline)
+        if offline and self.netns:
+            # no network at all for the parse; sudo drops the environment,
+            # so it is passed again inside
+            cmd = self.netns + ["env", "-i"] + ["%s=%s" % kv for kv in sorted(env.items())] + cmd
+        return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, timeout=timeout)
 
     def version(self):
         r = subprocess.run([self.xo, "version"], env=self.env(True), capture_output=True, timeout=60)
@@ -85,6 +90,41 @@ class Tool:
     def std_doc(self, name):
         r = self.run(["doc", "--json", name], self.home, True, DOC_TIMEOUT)
         return _json(r, "xo doc %s" % name)
+
+
+# The two ways to a process with no network, tried in order:
+#   - an unprivileged user and network namespace (Ubuntu 24.04 forbids it
+#     unless kernel.apparmor_restrict_unprivileged_userns is 0);
+#   - root's `unshare --net`, then setpriv back to this user, so xo never
+#     runs as root (GitHub's runners have passwordless sudo).
+def _candidates():
+    uid, gid = os.getuid(), os.getgid()
+    return [
+        ["unshare", "--user", "--map-root-user", "--net", "--"],
+        ["sudo", "-n", "unshare", "--net", "--", "setpriv", "--reuid=%d" % uid, "--regid=%d" % gid,
+         "--clear-groups", "--"],
+    ]
+
+
+# A probe that passes only when the namespace has no interface but loopback
+# up: /sys/class/net lists lo alone.
+_PROBE = ["sh", "-c", "ls /sys/class/net | grep -v -x lo | grep -q . && exit 1; exit 0"]
+
+
+def no_network_prefix(candidates=None, runner=subprocess.run):
+    """The first command prefix that runs a process with no network, as this
+    user; RuntimeError when none works (the build fails closed)."""
+    errs = []
+    for pre in candidates if candidates is not None else _candidates():
+        try:
+            r = runner(pre + _PROBE, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            errs.append("%s: %s" % (pre[0], e))
+            continue
+        if r.returncode == 0:
+            return pre
+        errs.append("%s: exit %d %s" % (" ".join(pre[:3]), r.returncode, (r.stderr or b"").decode("utf-8", "replace").strip()[:200]))
+    raise RuntimeError("no way to run xo doc without network: " + "; ".join(errs))
 
 
 def _tail(r):

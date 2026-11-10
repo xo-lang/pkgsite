@@ -14,8 +14,9 @@ is decision 0589 in
   index.xolang.org's feed for new versions, fetches each with the released
   xo through proxy.xolang.org (xo checks it against sum.xolang.org, the
   repository variable `XO_SUMDB`), and renders its docs with `xo doc --json`
-  under `unshare --net`, so a module's source is parsed with no network and
-  never run.
+  in a network namespace (an unprivileged one, else `sudo unshare --net`
+  with xo dropped back to the runner's user; the build fails when neither
+  works), so a module's source is parsed with no network and never run.
 - A version with no recognized license file gets a page saying so and no
   docs, as on pkg.go.dev.
 - The `build` job has no secrets and a read only token; it uploads the site
@@ -24,6 +25,15 @@ is decision 0589 in
 - The `heartbeat` job commits `state/heartbeat` once a day so GitHub keeps
   the schedule running.
 - Removing a module from the proxy (see the proxy's policy) removes its pages.
+
+## Std at each release (stage a)
+
+    scripts/render-std.sh v0.46.0 OUT
+
+installs that release's xo (checked against its SHA256SUMS), renders its
+std into `OUT/site` merged with the published catalog, and lists every file
+with its content type in `OUT/upload.txt` for the release's upload step. It
+uploads nothing.
 
 ## Layout of the site
 

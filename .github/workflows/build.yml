@@ -46,10 +46,6 @@ jobs:
         run: python3 -E -s -m unittest discover -s tests -t .
       - name: Install xo
         run: scripts/install-xo.sh "$XO_VERSION" "$RUNNER_TEMP/xo"
-      - name: Allow a network namespace for xo doc
-        # Ubuntu 24.04 restricts unprivileged user namespaces; the builder
-        # runs `xo doc` under `unshare --net` so a module's parse has no network
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build
         run: |
           if [ -z "$XO_SUMDB" ]; then
@@ -58,6 +54,9 @@ jobs:
           fi
           set -- --xo "$RUNNER_TEMP/xo/bin/xo" --work "$RUNNER_TEMP/work" --site site --state state \
             --catalog https://pkg.xolang.org/catalog.json --sandbox unshare
+          # --sandbox unshare runs xo doc with no network: an unprivileged
+          # network namespace, else sudo's (xo dropped back to this user);
+          # the build fails when neither works
           for m in $MODULES; do set -- "$@" --module "$m"; done
           if [ "$STD" = "true" ]; then set -- "$@" --std; fi
           python3 -E -s -m builder.build "$@"

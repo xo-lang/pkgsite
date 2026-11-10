@@ -114,6 +114,36 @@ class PackagesTest(unittest.TestCase):
             self.assertEqual(xotool.packages(d), ["", "deep/er", "x"])
 
 
+class SandboxTest(unittest.TestCase):
+    class R:
+        def __init__(self, code):
+            self.returncode = code
+            self.stderr = b"denied"
+
+    def test_first_that_works(self):
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd[0])
+            return self.R(1 if cmd[0] == "a" else 0)
+        self.assertEqual(xotool.no_network_prefix([["a"], ["b", "x"]], runner), ["b", "x"])
+        self.assertEqual(calls, ["a", "b"])
+
+    def test_fails_closed(self):
+        def runner(cmd, **kw):
+            if cmd[0] == "missing":
+                raise OSError("not found")
+            return self.R(1)
+        with self.assertRaises(RuntimeError):
+            xotool.no_network_prefix([["missing"], ["a"]], runner)
+
+    def test_probe_rejects_a_network(self):
+        # the probe itself: a directory listing with more than lo fails
+        import subprocess
+        r = subprocess.run(["sh", "-c", xotool._PROBE[2].replace("/sys/class/net", "/")], capture_output=True)
+        self.assertNotEqual(r.returncode, 0)
+
+
 class FeedTest(unittest.TestCase):
     def test_feed_file(self):
         with tempfile.TemporaryDirectory() as d:
