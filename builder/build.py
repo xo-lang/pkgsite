@@ -122,14 +122,23 @@ def build_version(tool, site, catalog, path, version):
         return True
     pkgs = xotool.packages(d)
     docs = {}
-    for rel in pkgs:
-        try:
-            entries = tool.doc(d, rel)
-        except Exception as e:
-            print("doc %s@%s %s: %s" % (path, version, rel or ".", e), file=sys.stderr)
-            continue
-        for ent in entries:
-            docs[rel] = ent
+    walked = None
+    try:
+        walked = tool.doc_walk(d, path)
+    except Exception as e:
+        print("doc %s@%s ./...: %s (one package at a time)" % (path, version, e), file=sys.stderr)
+    if walked is not None:
+        # the packages the toolchain walks, as the builder finds them
+        docs = {rel: ent for rel, ent in walked.items() if rel in pkgs}
+    else:
+        for rel in pkgs:
+            try:
+                entries = tool.doc(d, rel)
+            except Exception as e:
+                print("doc %s@%s %s: %s" % (path, version, rel or ".", e), file=sys.stderr)
+                continue
+            for ent in entries:
+                docs[rel] = ent
     build["packages"] = sorted(docs)
     symbols = {}
 

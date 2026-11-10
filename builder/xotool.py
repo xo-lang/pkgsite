@@ -83,6 +83,31 @@ class Tool:
         r = self.run(["doc", "--json", arg], module_dir, True, DOC_TIMEOUT)
         return _json(r, "xo doc %s" % arg)
 
+    def doc_walk(self, module_dir, path):
+        """{package dir relative to the module: entry} from one
+        `xo doc --json ./...` over the module (xo with the DIR/... fix,
+        xo-lang/xo 12ac410e0), or None when this xo reads `./...` as a
+        declaration name (0.45.0 and older): the caller then runs `doc`
+        per package."""
+        try:
+            entries = self.run_json(["doc", "--json", "./..."], module_dir)
+        except RuntimeError as e:
+            if "no declaration named ./..." in str(e):
+                return None
+            raise
+        out = {}
+        for ent in entries:
+            imp = ent.get("module", "")
+            if imp == path:
+                out[""] = ent
+            elif imp.startswith(path + "/"):
+                out[imp[len(path) + 1:]] = ent
+        return out
+
+    def run_json(self, args, cwd):
+        r = self.run(args, cwd, True, DOC_TIMEOUT)
+        return _json(r, "xo " + " ".join(args))
+
     def std_list(self):
         r = self.run(["doc", "--json", "std"], self.home, True, DOC_TIMEOUT)
         return _json(r, "xo doc std")

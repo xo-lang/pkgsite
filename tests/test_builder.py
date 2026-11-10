@@ -149,6 +149,30 @@ class SandboxTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
 
 
+class DocWalkTest(unittest.TestCase):
+    class Fake(xotool.Tool):
+        def __init__(self, answer):
+            self.answer = answer
+
+        def run_json(self, args, cwd):
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    def test_maps_packages(self):
+        t = self.Fake([{"module": "github.com/a/m"}, {"module": "github.com/a/m/x/y"}, {"module": "github.com/a/other"}])
+        self.assertEqual(sorted(t.doc_walk("/d", "github.com/a/m")), ["", "x/y"])
+
+    def test_old_xo_falls_back(self):
+        t = self.Fake(RuntimeError("xo doc --json ./...: no declaration named ./..."))
+        self.assertIsNone(t.doc_walk("/d", "github.com/a/m"))
+
+    def test_other_errors_raise(self):
+        t = self.Fake(RuntimeError("xo doc --json ./...: something else"))
+        with self.assertRaises(RuntimeError):
+            t.doc_walk("/d", "github.com/a/m")
+
+
 class FeedTest(unittest.TestCase):
     def test_feed_file(self):
         with tempfile.TemporaryDirectory() as d:
