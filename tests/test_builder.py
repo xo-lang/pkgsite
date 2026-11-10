@@ -98,6 +98,11 @@ class RenderTest(unittest.TestCase):
             self.assertIn('id="%s"' % name, body)
             self.assertIn('href="#%s"' % name, body)
 
+    def test_pages_have_a_viewport(self):
+        # a page without one renders 980 px wide on a phone (sitecheck, 2026-11-10)
+        for html in [render.page("t", "b"), render.redirect("/x/index.html")]:
+            self.assertIn('name="viewport"', html)
+
     def test_href(self):
         self.assertEqual(render.href("github.com/a/b", "v1.0.0", "x/y"), "/github.com/a/b@v1.0.0/x/y/index.html")
         self.assertEqual(render.href("std/charset"), "/std/charset/index.html")

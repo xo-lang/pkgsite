@@ -35,6 +35,17 @@ std into `OUT/site` merged with the published catalog, and lists every file
 with its content type in `OUT/upload.txt` for the release's upload step. It
 uploads nothing.
 
+Before uploading, check the staged site (`OUT/site` served on loopback):
+
+    (cd OUT/site && python3 -m http.server 8000 --bind 127.0.0.1) &
+    python3 -I scripts/sitecheck/crawl.py http://127.0.0.1:8000 OUT/site
+    (cd OUT/site && find . -name '*.html' | sed 's|^\.||') > /tmp/pages.txt
+    node scripts/sitecheck/width.mjs http://127.0.0.1:8000 /tmp/pages.txt "$(mktemp -d)"
+
+crawl.py fetches every page and every local link, checks each `#anchor`
+exists and no page repeats an id; width.mjs reports any page wider than a
+390 px phone.
+
 ## Layout of the site
 
     /<module>@<version>/index.html          the module's root package

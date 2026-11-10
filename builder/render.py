@@ -221,6 +221,7 @@ def redirect(target):
     t = esc(target)
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<meta http-equiv=\"refresh\" content=\"0; url=%s\"><link rel=\"canonical\" href=\"%s\">"
         "<title>Redirect</title></head><body><a href=\"%s\">%s</a></body></html>\n"
     ) % (t, t, t, t)
