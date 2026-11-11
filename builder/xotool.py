@@ -112,6 +112,20 @@ class Tool:
         r = self.run(["doc", "--json", "std"], self.home, True, DOC_TIMEOUT)
         return _json(r, "xo doc std")
 
+    def std_source(self, name):
+        """The text of std module name's declaration file in the release
+        next to the xo binary (<release>/lib/xo/std/<name>.xo), or "" when
+        the release has none there."""
+        base = name[len("std/"):] if name.startswith("std/") else name
+        if not base or "/" in base or base.startswith("."):
+            return ""
+        f = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(self.xo))), "lib", "xo", "std", base + ".xo")
+        try:
+            with open(f, encoding="utf-8") as h:
+                return h.read(1 << 20)
+        except OSError:
+            return ""
+
     def std_doc(self, name):
         r = self.run(["doc", "--json", name], self.home, True, DOC_TIMEOUT)
         return _json(r, "xo doc %s" % name)

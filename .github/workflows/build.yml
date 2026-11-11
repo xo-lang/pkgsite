@@ -4,7 +4,8 @@
 # `xo doc --json` with no network, and uploads the rendered pages as an
 # artifact. The publish job uploads that artifact to the xo-pkgsite R2
 # bucket with a token scoped to that bucket only (secrets R2_ACCESS_KEY_ID,
-# R2_SECRET_ACCESS_KEY, variable R2_ENDPOINT); it never checks out or runs
+# R2_SECRET_ACCESS_KEY and R2_ENDPOINT, a secret so the run log masks the
+# account id it names); it never checks out or runs
 # module source, which is only ever parsed in build.
 name: build
 
@@ -97,7 +98,7 @@ jobs:
     env:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
       R2_BUCKET: xo-pkgsite
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -113,7 +114,7 @@ jobs:
         id: publish
         run: |
           if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
-            echo "::notice::the R2 secrets or the R2_ENDPOINT variable are not set; nothing published"
+            echo "::notice::the R2 secrets (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT) are not all set; nothing published"
             exit 0
           fi
           scripts/publish-r2.sh "$RUNNER_TEMP/site"
@@ -125,7 +126,9 @@ jobs:
     # feed position once the publish job uploaded the pages built from it,
     # so a failed or skipped publish is built again on the next run. It
     # reads only position.json from the build, never the pages.
-    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.build.result == 'success' && needs.publish.result != 'failure' }}
+    # a scheduled run, or a dispatched one that read the feed (no modules
+    # named): both advance the position
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.modules == '')) && needs.build.result == 'success' && needs.publish.result != 'failure' }}
     needs: [build, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

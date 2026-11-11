@@ -116,9 +116,10 @@ def build_version(tool, site, catalog, path, version):
     build = {"license": [s for _, s in found], "docs": ok, "packages": []}
     mod["builds"][version] = build
     latest = paths.latest(mod["versions"])
+    foot = module_footer(path, version, found)
     if not ok:
         write(site, render.href(path, version)[1:], render.page(
-            "%s@%s" % (path, version), render.no_license_body(path, version, found)))
+            "%s@%s" % (path, version), render.no_license_body(path, version, found), foot=foot))
         return True
     pkgs = xotool.packages(d)
     docs = {}
@@ -159,7 +160,7 @@ def build_version(tool, site, catalog, path, version):
                 "<li><a href=\"%s\">%s</a></li>" % (render.esc(render.href(path, version, r)), render.esc(r))
                 for r in sorted(docs) if r))
         body.append(render.package_body(ent, srcfn))
-        write(site, render.href(path, version, rel)[1:], render.page("%s@%s" % (imp, version), "\n".join(body)))
+        write(site, render.href(path, version, rel)[1:], render.page("%s@%s" % (imp, version), "\n".join(body), foot=foot))
         symbols[imp] = _symbol_names(ent)
     if "" not in docs:
         # a module whose root holds no package still gets a page
@@ -167,9 +168,18 @@ def build_version(tool, site, catalog, path, version):
                 "<h2 id=\"packages\">Packages</h2><ul class=\"idx\">%s</ul>" % "".join(
                     "<li><a href=\"%s\">%s</a></li>" % (render.esc(render.href(path, version, r)), render.esc(r))
                     for r in sorted(docs))]
-        write(site, render.href(path, version)[1:], render.page("%s@%s" % (path, version), "\n".join(body)))
+        write(site, render.href(path, version)[1:], render.page("%s@%s" % (path, version), "\n".join(body), foot=foot))
     build["symbols"] = symbols
     return True
+
+
+def module_footer(path, version, found):
+    """A module version's footer: its repository, license, build and, for
+    a port, the repository's trademark line."""
+    note = ""
+    if found:
+        note = "License: " + ", ".join(s if s != "unknown" else "not recognized" for _, s in found) + "."
+    return render.footer(render.repo_url(path), note, render.generated_line("%s@%s" % (path, version)), render.port_notice(path))
 
 
 def _symbol_names(ent):
@@ -206,12 +216,86 @@ def build_std(tool, site, catalog):
                 return ""
             return "https://github.com/xo-lang/xo/blob/%s/%s#L%d" % (v, pos["file"], pos.get("line", 0))
 
+        para = render.std_paragraph(tool.std_source(name), name)
+        if not para:
+            # xo's own summary (cut at 100 characters), unless it only
+            # names a spec section
+            s = m.get("summary", "")
+            para = "" if s.startswith("see ") or s.endswith("...") else s
+        summary = render.first_sentence(para)
         body = ("<h1>%s</h1><p class=\"meta\"><span>Xo %s</span></p>%s%s" % (
-            render.esc(name), render.esc(ver), render.doc_html(m.get("summary", "")),
+            render.esc(name), render.esc(ver), render.doc_html(para),
             render.package_body(entries[0], srcfn)))
-        write(site, render.href(name, v)[1:], render.page("%s (Xo %s)" % (name, ver), body))
+        foot = render.footer("https://github.com/xo-lang/xo/tree/%s/std" % v,
+                             "Xo's standard library is licensed under MIT No Attribution (MIT-0).",
+                             render.generated_line("Xo %s" % v))
+        write(site, render.href(name, v)[1:], render.page("%s (Xo %s)" % (name, ver), body, summary, foot=foot))
         write(site, render.href(name)[1:], render.redirect(render.href(name, v)))
-        std["modules"].append({"path": name, "summary": m.get("summary", ""), "symbols": _symbol_names(entries[0])})
+        std["modules"].append({"path": name, "summary": summary, "symbols": _symbol_names(entries[0])})
+
+
+# The index's search box: hidden until the script runs, so with scripts
+# off the page is the full list. The script reads search/index.json and
+# ranks a package's name over its symbols' names over its summary.
+SEARCH_BOX = (
+    "<div class=\"search\" id=\"search\" hidden><input id=\"q\" type=\"search\" autocomplete=\"off\" spellcheck=\"false\" "
+    "placeholder=\"Search packages and symbols\" aria-label=\"Search packages and symbols\">"
+    "<p class=\"meta hint\">Press <code>/</code> to search, <code>Enter</code> opens the first result.</p></div>"
+    "<ul id=\"results\" hidden></ul>")
+
+SEARCH_SCRIPT = """<script>
+(function(){
+var data=null,box,q,res,all;
+function href(e){var rel=e.path===e.module?"":e.path.slice(e.module.length+1);return "/"+e.module+"@"+e.version+(rel?"/"+rel:"")+"/index.html";}
+function last(p){var i=p.lastIndexOf("/");return i<0?p:p.slice(i+1);}
+function rank(t0){
+  // tiers: a package named t, a package path with t, a symbol named t
+  // (or a method t), a symbol or one of its dotted parts starting with t,
+  // a symbol with t, a summary with t; an exact case match first in each
+  var out=[],t=t0.toLowerCase();
+  function add(tier,exact,len,e,s){out.push([tier*2+(exact?0:1),len,e,s]);}
+  data.forEach(function(e){
+    var p=e.path.toLowerCase(),n=last(p);
+    if(n===t)add(0,last(e.path)===t0,n.length,e,null);else if(p.indexOf(t)>=0)add(1,e.path.indexOf(t0)>=0,p.length,e,null);
+    (e.symbols||[]).forEach(function(s){
+      var l=s.toLowerCase(),parts=l.split(".");
+      if(l===t||parts[parts.length-1]===t)add(2,s===t0||s.endsWith("."+t0),s.length,e,s);
+      else if(parts.some(function(x){return x.indexOf(t)===0;}))add(3,s.indexOf(t0)>=0,s.length,e,s);
+      else if(l.indexOf(t)>=0)add(4,s.indexOf(t0)>=0,s.length,e,s);
+    });
+    if((e.summary||"").toLowerCase().indexOf(t)>=0)add(5,false,p.length,e,null);
+  });
+  out.sort(function(a,b){return a[0]-b[0]||a[1]-b[1]||(a[2].path<b[2].path?-1:a[2].path>b[2].path?1:0);});
+  var seen={},keep=[];
+  out.forEach(function(r){var k=r[2].path+"#"+(r[3]||"");if(!seen[k]&&keep.length<50){seen[k]=1;keep.push(r);}});
+  return keep;
+}
+function show(){
+  var t=q.value.trim();
+  res.textContent="";
+  if(!t||!data){res.hidden=true;all.hidden=false;return;}
+  var rs=rank(t);all.hidden=true;res.hidden=false;
+  if(!rs.length){var li=document.createElement("li");li.className="meta";li.textContent="No package or symbol matches.";res.appendChild(li);return;}
+  rs.forEach(function(r){
+    var e=r[2],li=document.createElement("li"),a=document.createElement("a"),k=document.createElement("span");
+    a.href=href(e)+(r[3]?"#"+encodeURIComponent(r[3]):"");
+    a.textContent=r[3]?last(e.path)+"."+r[3]:e.path;
+    k.className="kind";k.textContent=r[3]?e.path:(r[0]>=10?"summary":"package");
+    li.appendChild(a);li.appendChild(k);
+    if(!r[3]&&e.summary){var m=document.createElement("span");m.className="meta";m.style.display="block";e.summary.split("`").forEach(function(x,i,all){if(i%2&&i<all.length-1){var c=document.createElement("code");c.textContent=x;m.appendChild(c);}else m.appendChild(document.createTextNode(i%2?"`"+x:x));});li.appendChild(m);}
+    res.appendChild(li);
+  });
+}
+document.addEventListener("DOMContentLoaded",function(){
+  box=document.getElementById("search");q=document.getElementById("q");res=document.getElementById("results");all=document.getElementById("all");
+  if(!box||!window.fetch)return;
+  fetch("/search/index.json").then(function(r){return r.json();}).then(function(j){data=j.packages||[];box.hidden=false;show();});
+  q.addEventListener("input",show);
+  q.addEventListener("keydown",function(ev){if(ev.key==="Enter"){var a=res.querySelector("a");if(a){ev.preventDefault();location.href=a.href;}}else if(ev.key==="Escape"){q.value="";show();}});
+  document.addEventListener("keydown",function(ev){if(ev.key==="/"&&document.activeElement!==q&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){var t=ev.target.tagName;if(t!=="INPUT"&&t!=="TEXTAREA"){ev.preventDefault();q.focus();}}});
+});
+})();
+</script>"""
 
 
 def finish(site, catalog, touched):
@@ -219,7 +303,8 @@ def finish(site, catalog, touched):
         mod = catalog["modules"][path]
         latest = paths.latest(mod["versions"])
         write(site, path + "/index.html", render.redirect(render.href(path, latest)))
-        write(site, path + "/versions.html", render.page("%s versions" % path, render.versions_body(path, mod["versions"])))
+        write(site, path + "/versions.html", render.page("%s versions" % path, render.versions_body(path, mod["versions"]),
+                                                         foot=render.footer(render.repo_url(path), notice=render.port_notice(path))))
     # the home page and the search index cover the whole catalog
     items = []
     search = []
@@ -228,22 +313,22 @@ def finish(site, catalog, touched):
         latest = paths.latest(mod["versions"])
         if not latest:
             continue
-        items.append("<li><a href=\"%s\">%s</a> <span class=\"meta\">%s</span></li>" % (
+        items.append("<li><a href=\"%s\">%s</a><span class=\"meta\">%s</span></li>" % (
             render.esc(render.href(path, latest)), render.esc(path), render.esc(latest)))
         b = mod.get("builds", {}).get(latest, {})
         for imp, syms in sorted((b.get("symbols") or {}).items()):
-            search.append({"path": imp, "module": path, "version": latest, "symbols": syms})
+            search.append({"path": imp, "module": path, "version": latest, "summary": "", "symbols": syms})
     std = catalog.get("std", {})
-    std_items = "".join("<li><a href=\"%s\">%s</a> <span class=\"meta\">%s</span></li>" % (
-        render.esc(render.href(m["path"], std["version"])), render.esc(m["path"]), render.esc(m.get("summary", "")))
+    std_items = "".join("<li><a href=\"%s\">%s</a><span class=\"meta\">%s</span></li>" % (
+        render.esc(render.href(m["path"], std["version"])), render.esc(m["path"]), render.inline_code(m.get("summary", "")))
         for m in std.get("modules", []))
     for m in std.get("modules", []):
-        search.append({"path": m["path"], "module": m["path"], "version": std["version"], "symbols": m.get("symbols", [])})
-    body = "<h1>Xo packages</h1>"
+        search.append({"path": m["path"], "module": m["path"], "version": std["version"], "summary": m.get("summary", ""), "symbols": m.get("symbols", [])})
+    body = "<h1>Xo packages</h1>" + SEARCH_BOX + "<div id=\"all\">"
     if std_items:
-        body += "<h2 id=\"std\">Standard library (Xo %s)</h2><ul>%s</ul>" % (render.esc(std["version"][1:]), std_items)
-    body += "<h2 id=\"modules\">Modules</h2><ul>%s</ul>" % ("".join(items) or "<li>none yet</li>")
-    write(site, "index.html", render.page("pkg.xolang.org", body, "Documentation for Xo's standard library and published modules."))
+        body += "<h2 id=\"std\">Standard library (Xo %s)</h2><ul class=\"mods\">%s</ul>" % (render.esc(std["version"][1:]), std_items)
+    body += "<h2 id=\"modules\">Modules</h2><ul class=\"mods\">%s</ul></div>" % ("".join(items) or "<li>none yet</li>")
+    write(site, "index.html", render.page("pkg.xolang.org", body, "Documentation for Xo's standard library and published modules.", head=SEARCH_SCRIPT))
     write(site, "catalog.json", json.dumps(catalog, sort_keys=True, separators=(",", ":")))
     write(site, "search/index.json", json.dumps({"schema": 1, "packages": search}, sort_keys=True, separators=(",", ":")))
 
@@ -271,6 +356,8 @@ def main(argv=None):
     if a.sumdb and a.sumdb.strip() in ("off", ""):
         ap.error("--sumdb off: use --no-verify for local tests")
     tool = xotool.Tool(a.xo, a.work, a.proxy, "off" if a.no_verify else a.sumdb, a.sandbox)
+    render.BUILD["xo"] = tool.version()
+    render.BUILD["date"] = os.environ.get("PKGSITE_BUILD_DATE") or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     catalog = load_catalog(a.catalog)
     os.makedirs(a.site, exist_ok=True)
     pos_file = os.path.join(a.state, "position.json")
