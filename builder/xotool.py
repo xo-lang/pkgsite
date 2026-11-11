@@ -131,9 +131,17 @@ def _candidates():
     ]
 
 
-# A probe that passes only when the namespace has no interface but loopback
-# up: /sys/class/net lists lo alone.
-_PROBE = ["sh", "-c", "ls /sys/class/net | grep -v -x lo | grep -q . && exit 1; exit 0"]
+# A probe that passes only when the process has no route anywhere: no IPv4
+# route and no IPv6 route but loopback's, read from /proc/net (the process's
+# own network namespace). Not /sys/class/net: sysfs shows the namespace it
+# was mounted in, so inside `sudo unshare --net` it still listed the
+# runner's eth0 and the probe failed with no message (run 42940459718,
+# 2026-11-11). Not "only lo listed" either: a new namespace also lists the
+# kernel's fallback tunnel devices (tunl0, gre0, sit0 and others, down),
+# whenever their modules are loaded. A failing probe names the route's device.
+_PROBE = ["awk", 'FILENAME ~ /ipv6_route$/ { d = $NF } FILENAME !~ /ipv6_route$/ { if (FNR == 1) next; d = $1 } '
+          'd != "lo" { print "a route through " d " in the namespace" > "/dev/stderr"; bad = 1 } END { exit bad }',
+          "/proc/net/route", "/proc/net/ipv6_route"]
 
 
 def no_network_prefix(candidates=None, runner=subprocess.run):
