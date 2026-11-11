@@ -46,13 +46,11 @@ ctype() {
   esac
 }
 
-# a version's pages never change once built; the lists, redirects and the
-# catalog do, so they are cached briefly
+# every file is cached briefly: a version's pages are rebuilt whenever the
+# renderer changes (the std pages on every --std run), and a day-long cache
+# kept the old pages live for a day after the 2026-11-11 restyle
 cache() {
-  case $1 in
-    *@*/*) echo "public, max-age=86400" ;;
-    *) echo "public, max-age=300" ;;
-  esac
+  echo "public, max-age=300"
 }
 
 n=0
