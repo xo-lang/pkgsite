@@ -7,7 +7,8 @@
 # Environment:
 #   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  a token scoped to the bucket only
 #   R2_ENDPOINT   https://<account id>.r2.cloudflarestorage.com (a repository
-#                 variable, so the account id is not in this repository)
+#                 secret, so the account id is neither in this repository
+#                 nor in the public run log)
 #   R2_BUCKET     default xo-pkgsite
 #   DRY_RUN=1     print each upload instead of running it (no credentials needed)
 #

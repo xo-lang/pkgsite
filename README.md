@@ -5,7 +5,7 @@ The builder for [pkg.xolang.org](https://pkg.xolang.org): documentation pages fo
 proxy.xolang.org.
 
 Status: the `build` and `publish` jobs are in place; `publish` uploads
-nothing until the owner sets the R2 secrets and the `R2_ENDPOINT` variable. The design
+nothing until the owner sets the R2 secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`). The design
 is decision 0589 in
 [xo-lang/xo](https://github.com/xo-lang/xo/blob/main/knowledgebase/decisions/0589-pkg-docs-site.md).
 
@@ -25,7 +25,7 @@ is decision 0589 in
 - The `publish` job (main only) downloads the site artifact and writes it to
   the `xo-pkgsite` R2 bucket with `scripts/publish-r2.sh`, using a token
   scoped to that bucket only: secrets `R2_ACCESS_KEY_ID` and
-  `R2_SECRET_ACCESS_KEY`, variable `R2_ENDPOINT`
+  `R2_SECRET_ACCESS_KEY` and `R2_ENDPOINT` (a secret, so the run log masks the account id)
   (`https://<account id>.r2.cloudflarestorage.com`). It never sees module
   source. It adds and replaces files and never deletes; `catalog.json` goes
   last, so the next build never takes a page as built before it is uploaded.
