@@ -38,6 +38,12 @@ class StdParagraphTest(unittest.TestCase):
         self.assertEqual(render.first_sentence("no end"), "no end")
 
 
+class InlineCodeTest(unittest.TestCase):
+    def test_code_spans(self):
+        self.assertEqual(render.inline_code("`hash` and <b>"), "<code>hash</code> and &lt;b&gt;")
+        self.assertEqual(render.inline_code("odd ` tick"), "odd ` tick")
+
+
 class FooterTest(unittest.TestCase):
     def test_port_notice(self):
         self.assertIn("OpenAI is a trademark", render.port_notice("github.com/xo-lang/openai/azure"))
@@ -52,8 +58,10 @@ class FooterTest(unittest.TestCase):
     def test_footer_escapes_and_links(self):
         f = render.footer("https://github.com/a/b", "License: MIT.", "Generated <x>.", "")
         self.assertIn('href="https://xolang.dev/"', f)
-        self.assertIn('href="https://github.com/xo-lang/xo"', f)
-        self.assertIn('href="https://github.com/a/b"', f)
+        self.assertIn('>GitHub a/b</a>', f)
+        self.assertNotIn('github.com/xo-lang/xo"', f)
+        self.assertIn('>GitHub xo-lang/xo</a>', render.footer("https://github.com/xo-lang/xo/tree/v0.46.0/std"))
+        self.assertIn('href="https://github.com/xo-lang/xo"', render.footer())
         self.assertIn("Generated &lt;x&gt;.", f)
 
     def test_every_page_has_a_footer_and_one_container(self):

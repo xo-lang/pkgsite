@@ -177,9 +177,14 @@ def footer(source="", license_note="", generated="", notice=""):
     """The footer every page carries: xolang.dev's links, the page's source
     repository, its license, how and when it was generated, and for a port
     its repository's trademark line."""
-    links = [("xolang.dev", SITE + "/"), ("docs", SITE + "/docs/"), ("GitHub xo-lang/xo", "https://github.com/xo-lang/xo")]
-    if source:
-        links.append(("source", source))
+    # the repository the page comes from: xo-lang/xo for std and the
+    # index, the module's own repository for a module page
+    gh = ("GitHub xo-lang/xo", source or "https://github.com/xo-lang/xo")
+    if source and not source.startswith("https://github.com/xo-lang/xo/"):
+        gh = ("source " + "/".join(source.split("/")[2:5]) if source.count("/") >= 4 else "source", source)
+        if source.startswith("https://github.com/"):
+            gh = ("GitHub " + "/".join(source.split("/")[3:5]), source)
+    links = [("xolang.dev", SITE + "/"), ("docs", SITE + "/docs/"), gh]
     out = ["<footer><div class=\"wrap\"><div class=\"links\">%s</div>" % "".join(
         "<a href=\"%s\">%s</a>" % (esc(u), esc(t)) for t, u in links)]
     for t in (license_note, generated, notice):
@@ -187,6 +192,14 @@ def footer(source="", license_note="", generated="", notice=""):
             out.append("<p>%s</p>" % esc(t))
     out.append("</div></footer>")
     return "".join(out)
+
+
+def inline_code(text):
+    """text escaped, with `code` spans as <code>."""
+    parts = text.split("`")
+    if len(parts) % 2 == 0:
+        return esc(text)
+    return "".join(esc(x) if i % 2 == 0 else "<code>%s</code>" % esc(x) for i, x in enumerate(parts))
 
 
 def generated_line(what):

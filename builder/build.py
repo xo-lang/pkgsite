@@ -282,7 +282,7 @@ function show(){
     a.textContent=r[3]?last(e.path)+"."+r[3]:e.path;
     k.className="kind";k.textContent=r[3]?e.path:(r[0]>=10?"summary":"package");
     li.appendChild(a);li.appendChild(k);
-    if(!r[3]&&e.summary){var m=document.createElement("span");m.className="meta";m.style.display="block";m.textContent=e.summary;li.appendChild(m);}
+    if(!r[3]&&e.summary){var m=document.createElement("span");m.className="meta";m.style.display="block";e.summary.split("`").forEach(function(x,i,all){if(i%2&&i<all.length-1){var c=document.createElement("code");c.textContent=x;m.appendChild(c);}else m.appendChild(document.createTextNode(i%2?"`"+x:x));});li.appendChild(m);}
     res.appendChild(li);
   });
 }
@@ -320,7 +320,7 @@ def finish(site, catalog, touched):
             search.append({"path": imp, "module": path, "version": latest, "summary": "", "symbols": syms})
     std = catalog.get("std", {})
     std_items = "".join("<li><a href=\"%s\">%s</a><span class=\"meta\">%s</span></li>" % (
-        render.esc(render.href(m["path"], std["version"])), render.esc(m["path"]), render.esc(m.get("summary", "")))
+        render.esc(render.href(m["path"], std["version"])), render.esc(m["path"]), render.inline_code(m.get("summary", "")))
         for m in std.get("modules", []))
     for m in std.get("modules", []):
         search.append({"path": m["path"], "module": m["path"], "version": std["version"], "summary": m.get("summary", ""), "symbols": m.get("symbols", [])})
