@@ -3,6 +3,7 @@ python3 -E -s -m unittest discover -s tests -t ."""
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -142,11 +143,42 @@ class SandboxTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             xotool.no_network_prefix([["missing"], ["a"]], runner)
 
-    def test_probe_rejects_a_network(self):
-        # the probe itself: a directory listing with more than lo fails
+    def _probe(self, route, ipv6):
+        # the probe itself, over route tables of its own
         import subprocess
-        r = subprocess.run(["sh", "-c", xotool._PROBE[2].replace("/sys/class/net", "/")], capture_output=True)
+        import tempfile
+        d = tempfile.mkdtemp()
+        try:
+            names = []
+            for name, text in (("route", route), ("ipv6_route", ipv6)):
+                names.append(os.path.join(d, name))
+                with open(names[-1], "w") as f:
+                    f.write(text)
+            return subprocess.run(xotool._PROBE[:2] + names, capture_output=True)
+        finally:
+            shutil.rmtree(d)
+
+    HEAD = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+    LO6 = "00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000001 00000000 80200001 lo\n"
+
+    def test_probe_rejects_an_ipv4_route(self):
+        r = self._probe(self.HEAD + "eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n", "")
         self.assertNotEqual(r.returncode, 0)
+        self.assertIn(b"through eth0", r.stderr)
+
+    def test_probe_rejects_an_ipv6_route(self):
+        r = self._probe(self.HEAD, self.LO6 + self.LO6.replace(" lo\n", " eth0\n"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(b"through eth0", r.stderr)
+
+    def test_probe_accepts_loopback_alone(self):
+        r = self._probe(self.HEAD, self.LO6)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self._probe(self.HEAD, "")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_probe_reads_the_process_namespace(self):
+        self.assertEqual(xotool._PROBE[2:], ["/proc/net/route", "/proc/net/ipv6_route"])
 
 
 class DocWalkTest(unittest.TestCase):
