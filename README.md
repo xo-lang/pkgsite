@@ -4,7 +4,8 @@ The builder for [pkg.xolang.org](https://pkg.xolang.org): documentation pages fo
 [Xo](https://xolang.dev)'s standard library and for modules published through
 proxy.xolang.org.
 
-Status: the `build` job is in place; nothing is published yet. The design
+Status: the `build` and `publish` jobs are in place; `publish` uploads
+nothing until the owner sets the R2 secrets and the `R2_ENDPOINT` variable. The design
 is decision 0589 in
 [xo-lang/xo](https://github.com/xo-lang/xo/blob/main/knowledgebase/decisions/0589-pkg-docs-site.md).
 
@@ -20,10 +21,21 @@ is decision 0589 in
 - A version with no recognized license file gets a page saying so and no
   docs, as on pkg.go.dev.
 - The `build` job has no secrets and a read only token; it uploads the site
-  as an artifact. A separate `publish` job (not yet added) will upload it to
-  the site's storage with a token scoped to that bucket.
-- The `heartbeat` job commits `state/heartbeat` once a day so GitHub keeps
-  the schedule running.
+  and the new feed position (`state/position.json`) as artifacts.
+- The `publish` job (main only) downloads the site artifact and writes it to
+  the `xo-pkgsite` R2 bucket with `scripts/publish-r2.sh`, using a token
+  scoped to that bucket only: secrets `R2_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY`, variable `R2_ENDPOINT`
+  (`https://<account id>.r2.cloudflarestorage.com`). It never sees module
+  source. It adds and replaces files and never deletes; `catalog.json` goes
+  last, so the next build never takes a page as built before it is uploaded.
+  With the secrets unset it prints a notice and publishes nothing.
+  `DRY_RUN=1 scripts/publish-r2.sh SITE` lists each upload with its content
+  type and cache header.
+- The `heartbeat` job (scheduled runs) commits `state/heartbeat` once a day
+  so GitHub keeps the schedule running, and commits `state/position.json`
+  when a publish uploaded the pages built up to it; a failed or skipped
+  publish leaves the position, so the next run builds those versions again.
 - Removing a module from the proxy (see the proxy's policy) removes its pages.
 
 ## Std at each release (stage a)

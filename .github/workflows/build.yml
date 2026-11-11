@@ -2,8 +2,10 @@
 # only token: it reads the index feed, fetches each new version through
 # proxy.xolang.org checked against sum.xolang.org, runs the released xo's
 # `xo doc --json` with no network, and uploads the rendered pages as an
-# artifact. Publishing to R2 is a separate job, added later with its own
-# bucket-scoped secret; module source is only ever parsed here.
+# artifact. The publish job uploads that artifact to the xo-pkgsite R2
+# bucket with a token scoped to that bucket only (secrets R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, variable R2_ENDPOINT); it never checks out or runs
+# module source, which is only ever parsed in build.
 name: build
 
 on:
@@ -33,6 +35,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      built: ${{ steps.build.outputs.built }}
     env:
       XO_VERSION: ${{ vars.XO_VERSION || 'v0.46.0' }}
       XO_SUMDB: ${{ vars.XO_SUMDB }}
@@ -47,47 +51,120 @@ jobs:
       - name: Install xo
         run: scripts/install-xo.sh "$XO_VERSION" "$RUNNER_TEMP/xo"
       - name: Build
+        id: build
         run: |
           if [ -z "$XO_SUMDB" ]; then
             echo "::notice::the repository variable XO_SUMDB (sum.xolang.org's verifier key) is not set; nothing built"
             exit 0
           fi
           set -- --xo "$RUNNER_TEMP/xo/bin/xo" --work "$RUNNER_TEMP/work" --site site --state state \
-            --catalog https://pkg.xolang.org/catalog.json --sandbox unshare
+            --catalog https://pkg.xolang.org/catalog.json --sandbox unshare --advance
           # --sandbox unshare runs xo doc with no network: an unprivileged
           # network namespace, else sudo's (xo dropped back to this user);
           # the build fails when neither works
           for m in $MODULES; do set -- "$@" --module "$m"; done
           if [ "$STD" = "true" ]; then set -- "$@" --std; fi
           python3 -E -s -m builder.build "$@"
+          # --advance writes state/position.json (feed runs only); the
+          # position is committed only after the publish job uploaded the site
+          if [ -f site/catalog.json ]; then echo "built=1" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: site
           path: site
           if-no-files-found: ignore
           retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: state
+          path: state/position.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    # the build's pages to R2. No module source here: it checks out this
+    # repository for the upload script only and downloads the artifact.
+    # Only from main, never for a pull request (the workflow has no
+    # pull_request trigger, and forks get no secrets).
+    needs: build
+    if: needs.build.outputs.built == '1' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+    env:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+      R2_BUCKET: xo-pkgsite
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/publish-r2.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: site
+          path: ${{ runner.temp }}/site
+      - name: Upload to R2
+        id: publish
+        run: |
+          if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
+            echo "::notice::the R2 secrets or the R2_ENDPOINT variable are not set; nothing published"
+            exit 0
+          fi
+          scripts/publish-r2.sh "$RUNNER_TEMP/site"
+          echo "published=1" >> "$GITHUB_OUTPUT"
 
   heartbeat:
     # GitHub turns off scheduled workflows after 60 days with no commit:
-    # one small commit a day keeps the schedule alive. It touches only
-    # state/heartbeat and never sees the build's output. When the publish
-    # job lands, this job commits the published feed position instead.
-    if: github.event_name == 'schedule'
-    needs: build
+    # one small commit a day keeps the schedule alive. It also commits the
+    # feed position once the publish job uploaded the pages built from it,
+    # so a failed or skipped publish is built again on the next run. It
+    # reads only position.json from the build, never the pages.
+    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.build.result == 'success' && needs.publish.result != 'failure' }}
+    needs: [build, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Commit the day's heartbeat
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.publish.outputs.published == '1'
+        with:
+          name: state
+          path: ${{ runner.temp }}/state
+      - name: Commit the published position and the day's heartbeat
+        env:
+          PUBLISHED: ${{ needs.publish.outputs.published }}
         run: |
-          day=$(date -u +%Y-%m-%d)
-          if [ "$(cat state/heartbeat 2>/dev/null)" = "$day" ]; then exit 0; fi
           mkdir -p state
-          echo "$day" > state/heartbeat
+          msg=""
+          day=$(date -u +%Y-%m-%d)
+          if [ "$(cat state/heartbeat 2>/dev/null)" != "$day" ]; then
+            echo "$day" > state/heartbeat
+            msg="heartbeat $day"
+          fi
+          new="$RUNNER_TEMP/state/position.json"
+          if [ "$PUBLISHED" = 1 ] && [ -f "$new" ]; then
+            # only the position's own fields: a since timestamp and a heartbeat
+            python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); assert set(d) <= {"since","heartbeat"} and all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", str(v)) for v in d.values())' "$new"
+            # a commit only when the position moved (its heartbeat field
+            # changes every run)
+            since() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("since",""))' "$1" 2>/dev/null; }
+            to=$(since "$new")
+            if [ -n "$to" ] && [ "$to" != "$(since state/position.json)" ]; then
+              cp "$new" state/position.json
+              msg="${msg:+$msg, }position $to"
+            fi
+          fi
+          [ -n "$msg" ] || exit 0
           git config user.name "pkgsite heartbeat"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/heartbeat
-          git commit -q -m "heartbeat $day"
+          git add state
+          git commit -q -m "$msg"
           git push -q origin HEAD:main
