@@ -37,7 +37,8 @@ class PublishTest(unittest.TestCase):
             self.assertEqual(keys[-3:], ["search/index.json", "index.html", "catalog.json"])
             self.assertEqual(len(keys), 8)
             h = {p[0][4:]: (p[1], p[2]) for p in puts}
-            self.assertEqual(h["example.com/m@v1.0.0/index.html"], ("text/html; charset=utf-8", "public, max-age=86400"))
+            self.assertEqual(h["example.com/m@v1.0.0/index.html"], ("text/html; charset=utf-8", "public, max-age=300"))
+            self.assertEqual(h["std/charset@0.46.0/index.html"][1], "public, max-age=300")
             self.assertEqual(h["example.com/m/versions.html"][1], "public, max-age=300")
             self.assertEqual(h["catalog.json"], ("application/json", "public, max-age=300"))
             self.assertIn("8 file(s) to xo-pkgsite", r.stdout)
