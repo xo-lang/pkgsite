@@ -30,8 +30,18 @@ class StdParagraphTest(unittest.TestCase):
     def test_gos_prefix(self):
         self.assertEqual(render.std_paragraph(ADLER, "std/adler32"), "The checksum of zlib (RFC 1950) (port of Go's hash/adler32).")
 
-    def test_notes_only_header_is_empty(self):
-        self.assertEqual(render.std_paragraph(HTTP, "std/http"), "")
+    def test_notes_only_header_falls_back(self):
+        self.assertEqual(render.std_paragraph(HTTP, "std/http"), render.STD_FALLBACK["std/http"])
+        self.assertEqual(render.std_paragraph(HTTP, "std/other"), "")
+
+    def test_reference_in_the_opening_and_pure(self):
+        # the opening's parenthesis is a decision; "Pure." and a later
+        # "(decision 0087)." are not the summary
+        src = ("// std/timego (decision 0537): Go's time layouts for code ported from Go: Go's own\n"
+               "// layout scanner over core time's civil functions. The core API is unchanged (decision 0087).\n"
+               "// Declaration file. Pure.\nuse std/time\n")
+        self.assertEqual(render.std_paragraph(src, "std/timego"),
+                         "Go's time layouts for code ported from Go: Go's own layout scanner over core time's civil functions.")
 
     def test_first_sentence_keeps_abbreviations_and_whole_text(self):
         self.assertEqual(render.first_sentence("Uses e.g. this. Then more."), "Uses e.g. this.")
