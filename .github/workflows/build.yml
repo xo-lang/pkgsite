@@ -51,6 +51,8 @@ jobs:
         run: python3 -E -s -m unittest discover -s tests -t .
       - name: Install xo
         run: scripts/install-xo.sh "$XO_VERSION" "$RUNNER_TEMP/xo"
+      - name: Std summaries
+        run: XO_STD_DIR="$RUNNER_TEMP/xo/lib/xo/std" python3 -E -s -m unittest tests.test_std_summaries
       - name: Build
         id: build
         run: |

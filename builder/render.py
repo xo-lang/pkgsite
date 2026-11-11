@@ -241,13 +241,43 @@ def page(title, body, description="", foot=None, head=""):
 _PORT_RE = re.compile(r"^((?:Go's )?[A-Za-z0-9][A-Za-z0-9.\-]*(?:/[A-Za-z0-9_.\-]+)+|Go's [A-Za-z0-9_.\-]+):\s+")
 
 
+# What a std header says about the file rather than the module, removed
+# wherever it stands.
+_BOILER = [
+    re.compile(r"Declaration file;\s*encoding rules are listed at the top of std/prelude\.xo\.\s*", re.I),
+    re.compile(r"Declaration file\.\s*", re.I),
+    re.compile(r"Encoding rules are listed at the top of std/prelude\.xo\.\s*", re.I),
+    re.compile(r"(?:^|(?<=[.:]\s))Pure\.\s*"),
+    re.compile(r"Notes for this file:.*$", re.S),
+    re.compile(r"The core API is unchanged\.\s*"),
+]
+# A reference to a decision, a spec section or a license, dropped:
+# "(decision 0537)", "(std.md 5 table)", "(spec/std.md 4)",
+# "(MIT, Copyright 2017 ...)", "(token.go, BSD license, ...)", and a
+# trailing ", decision 0521".
+_REF = re.compile(r"\s*\((?:[^()]*?\b(?:decisions?|spec/|std\.md|core\.md|core \d|ADR|[Ll]icen[cs]e|Copyright)\b[^()]*)\)")
+_TRAIL_REF = re.compile(r",\s*decisions? \d+(?:\s*and\s*\d+)?(?=[.;])")
+_OPEN = re.compile(r"^std/[\w/]+(?:\s*\([^()]*\))?\s*[.:]\s*")
+
+# The modules whose header holds only notes for the file (std/http,
+# std/sql, std/testing): a line from their spec sections (spec/std.md 4,
+# 10, 8) until their headers say what they are.
+STD_FALLBACK = {
+    "std/http": "HTTP servers and clients: routing, requests and responses, TLS and compression (Go's net/http).",
+    "std/sql": "SQL databases through drivers: the in-memory one, Postgres and SQLite, with parameters, rows and transactions (Go's database/sql).",
+    "std/testing": "The fakes tests run on: FakeNet, FakeClock, MemFs, FakeEnv, FakeStdio, FakeProc and the test keyring, and captured logs.",
+}
+
+
 def std_paragraph(src, name=""):
-    """The first paragraph of a std file's header comment that describes
-    the module: without the `std/NAME (spec ...).` opening, the declaration
-    file's boilerplate and a "Notes for this file:" block. A leading Go
-    path (`golang.org/x/crypto/bcrypt: password hashes ...`) becomes a
-    trailing "(port of golang.org/x/crypto/bcrypt)". "" when the header
-    says nothing more."""
+    """What a std module is for, from its file's header comment: the
+    lines before the first blank one, without the `std/NAME (...)`
+    opening, what it says about the declaration file ("Declaration
+    file", "Pure.", "Notes for this file:") and references to decisions,
+    spec sections and licenses. A leading Go path
+    (`golang.org/x/crypto/bcrypt: password hashes ...`) becomes a
+    trailing "(port of ...)". STD_FALLBACK's line when the header says
+    nothing more."""
     lines = []
     for l in src.split("\n"):
         if not l.startswith("//"):
@@ -257,20 +287,12 @@ def std_paragraph(src, name=""):
             break
         lines.append(x)
     text = " ".join(lines).strip()
-    if text.startswith("std/"):
-        i = text.find("). ")
-        if i >= 0:
-            text = text[i + 3:]
-        elif name and text.startswith(name + ": "):
-            text = text[len(name) + 2:]
-    if text.startswith("Declaration file;"):
-        i = text.find("prelude.xo. ")
-        text = text[i + 12:] if i >= 0 else ""
-    if text.startswith("Declaration file. "):
-        text = text[len("Declaration file. "):]
-    if text.startswith("Notes for this file:") or text == "Declaration file.":
-        text = ""
-    text = text.strip()
+    text = _OPEN.sub("", text, count=1)
+    text = _REF.sub("", text)
+    text = _TRAIL_REF.sub("", text)
+    for r in _BOILER:
+        text = r.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
     m = _PORT_RE.match(text)
     if m:
         src_name = m.group(1)
@@ -279,6 +301,10 @@ def std_paragraph(src, name=""):
             rest = rest[0].upper() + rest[1:]
             end = first_sentence(rest)
             text = end[:-1] + " (port of %s)." % src_name + rest[len(end):] if end.endswith(".") else rest + " (port of %s)" % src_name
+    if not text:
+        return STD_FALLBACK.get(name, "")
+    if text[0].islower() and not re.match(r"[a-z]+[A-Z/.]", text.split(" ")[0]):
+        text = text[0].upper() + text[1:]
     return text
 
 
