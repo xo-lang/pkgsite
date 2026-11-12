@@ -158,8 +158,8 @@ jobs:
           fi
           new="$RUNNER_TEMP/state/position.json"
           if [ "$PUBLISHED" = 1 ] && [ -f "$new" ]; then
-            # only the position's own fields: a since timestamp and a heartbeat
-            python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); assert set(d) <= {"since","heartbeat"} and all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", str(v)) for v in d.values())' "$new"
+            # only the position's own fields: since, heartbeat and failure counts
+            python3 -I builder/position.py "$new"
             # a commit only when the position moved (its heartbeat field
             # changes every run)
             since() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("since",""))' "$1" 2>/dev/null; }
