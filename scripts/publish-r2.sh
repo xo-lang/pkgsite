@@ -77,12 +77,33 @@ while IFS= read -r f; do
 done <<EOF
 $list
 EOF
-while IFS= read -r f; do
-  case " $last " in *" $f "*) continue ;; esac
-  put "$f"
-done <<EOF
-$list
+pages=$(printf '%s\n' "$list" | while IFS= read -r f; do
+  case " $last " in (*" $f "*) continue ;; esac
+  printf '%s\n' "$f"
+done)
+if [ "${DRY_RUN:-0}" = 1 ] || [ "${PUBLISH_JOBS:-16}" -le 1 ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] && put "$f"
+  done <<EOF
+$pages
 EOF
+elif [ -n "$pages" ]; then
+  # the pages PUBLISH_JOBS (default 16) at a time: one put a file took
+  # 12 minutes for 400 versions (2026-11-12), a full rebuild's 2164 past
+  # the publish job's limit. The names were checked above; every page is
+  # up before the last files go (xargs waits for all and fails if any did).
+  printf '%s\n' "$pages" | PUBLISH_SITE=$site PUBLISH_BUCKET=$bucket \
+    xargs -P "${PUBLISH_JOBS:-16}" -n 1 sh -c '
+      f=$1
+      case $f in
+        *.html) t="text/html; charset=utf-8" ;; *.json) t="application/json" ;;
+        *.css) t="text/css; charset=utf-8" ;; *.js) t="text/javascript; charset=utf-8" ;;
+        *.svg) t="image/svg+xml" ;; *.txt) t="text/plain; charset=utf-8" ;; *) t="application/octet-stream" ;;
+      esac
+      aws s3api put-object --endpoint-url "$R2_ENDPOINT" --bucket "$PUBLISH_BUCKET" --key "$f" \
+        --body "$PUBLISH_SITE/$f" --content-type "$t" --cache-control "public, max-age=300" > /dev/null || exit 255' _
+  n=$(printf '%s\n' "$pages" | wc -l | tr -d ' ')
+fi
 for f in $last; do
   [ -f "$site/$f" ] && put "$f"
 done

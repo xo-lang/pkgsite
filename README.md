@@ -38,6 +38,39 @@ is decision 0589 in
   publish leaves the position, so the next run builds those versions again.
 - Removing a module from the proxy (see the proxy's policy) removes its pages.
 
+## Two stages and rebuilds
+
+A version is built in two stages (decision
+[0001](decisions/0001-two-stage-build.md)): (a) fetch, license and `xo doc
+--json`, stored at `/_doc/<module>/@v/<version>.json`; (b) HTML from that
+record alone. The catalog notes, per version, the xo that made its docs and
+the renderer version (`RENDERER` in `builder/build.py`; bump it with any
+change to how a record becomes pages).
+
+Rebuild published versions with the workflow's `rebuild` input (Actions, run
+workflow; never moves the feed position, never overlaps a feed run):
+
+| rebuild | stage | when |
+| --- | --- | --- |
+| `all` | `render` | a template or style change (bump `RENDERER` first) |
+| `aws`, `azure`, `gcp`, `openai` | `render` or `full` | one SDK's modules |
+| a pattern, e.g. `github.com/xo-lang/gcp/bigquery/*` | either | some modules |
+| `all` | `full` | a new xo whose `xo doc` output changed |
+
+`stale` (default on) keeps only versions an older renderer (full: or an
+older xo) made; `shards` (1 to 16, default 8) is how many jobs share it.
+From the command line:
+
+    gh workflow run build.yml -f rebuild=all -f stage=render
+    gh workflow run build.yml -f rebuild=gcp -f stage=full -f shards=16
+
+Locally, one shard then the finish:
+
+    python3 -E -s -m builder.build --site /tmp/pk-site \
+      --catalog https://pkg.xolang.org/catalog.json --rebuild aws --stage render --shard 0/1
+    python3 -E -s -m builder.build --site /tmp/pk-site \
+      --catalog https://pkg.xolang.org/catalog.json --finish-parts
+
 ## Std at each release (stage a)
 
     scripts/render-std.sh v0.46.0 OUT
@@ -65,6 +98,7 @@ exists and no page repeats an id; width.mjs reports any page wider than a
     /<module>/index.html                    a redirect to the latest version
     /<module>/versions.html
     /std/<name>@<xo version>/index.html
+    /_doc/<module>/@v/<version>.json        the version's doc record (stage a)
     /catalog.json, /search/index.json
 
 Symbols are anchored by their exact name (`#Client.get`).

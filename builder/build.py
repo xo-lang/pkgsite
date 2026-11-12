@@ -14,6 +14,7 @@ package with no network, and writes:
     site/<path>/index.html                    a redirect to the latest version
     site/<path>/versions.html                 its versions
     site/std/<name>@<xo version>/index.html   std (--std)
+    site/_doc/<path>/@v/<version>.json        its doc record (stage a; see --rebuild)
     site/index.html, site/catalog.json, site/search/index.json
 
 The catalog (what earlier runs built) comes from --catalog, normally the
@@ -24,6 +25,7 @@ version lists and search index cover everything. The new position goes to
 
 import argparse
 import datetime
+import fnmatch
 import json
 import os
 import sys
@@ -145,26 +147,35 @@ def write(site, rel, text):
         f.write(text)
 
 
-def build_version(tool, site, catalog, path, version):
-    """Renders one module version; returns its catalog entry update."""
-    mod = catalog["modules"].setdefault(path, {"versions": [], "builds": {}})
+# RENDERER is the page renderer's version: bump it with any change to how
+# a stored doc JSON becomes HTML (render.py, the page layout here), so a
+# rebuild (--rebuild ... --stale) renders again exactly the pages an older
+# renderer made. Catalog builds with no "renderer" are version 0.
+RENDERER = 1
+# DOC_SCHEMA is the stored doc JSON's own format (stage a's output).
+DOC_SCHEMA = 1
+
+
+def doc_rel(path, version):
+    """Where stage (a) stores a version's doc JSON in the site."""
+    return "_doc/%s/@v/%s.json" % (path, version)
+
+
+def gather(tool, path, version):
+    """Stage (a): fetches one module version (checked against the checksum
+    log by xo), finds its license and, when redistributable, runs `xo doc
+    --json` over its packages. Returns the doc record stage (b) renders
+    from, or None when the fetch failed. No HTML here."""
     try:
         d = tool.fetch(path, version)
     except Exception as e:
         print("fetch %s@%s: %s" % (path, version, e), file=sys.stderr)
-        return False
+        return None
     found = lic.detect(d)
-    ok = lic.redistributable(found)
-    if version not in mod["versions"]:
-        mod["versions"].append(version)
-    build = {"license": [s for _, s in found], "docs": ok, "packages": []}
-    mod["builds"][version] = build
-    latest = paths.latest(mod["versions"])
-    foot = module_footer(path, version, found)
-    if not ok:
-        write(site, render.href(path, version)[1:], render.page(
-            "%s@%s" % (path, version), render.no_license_body(path, version, found), foot=foot))
-        return True
+    rec = {"schema": DOC_SCHEMA, "path": path, "version": version, "xo": render.BUILD.get("xo", ""),
+           "license": [[f, s] for f, s in found], "docs": {}}
+    if not lic.redistributable(found):
+        return rec
     pkgs = xotool.packages(d)
     docs = {}
     walked = None
@@ -184,6 +195,52 @@ def build_version(tool, site, catalog, path, version):
                 continue
             for ent in entries:
                 docs[rel] = ent
+    rec["docs"] = docs
+    return rec
+
+
+def check_doc(rec, path, version):
+    """A stored doc record, checked: it is for path@version and in a
+    schema this builder reads. Raises ValueError otherwise."""
+    if not isinstance(rec, dict) or rec.get("schema") != DOC_SCHEMA:
+        raise ValueError("%s@%s: doc JSON schema %r, want %d" % (path, version, rec.get("schema") if isinstance(rec, dict) else None, DOC_SCHEMA))
+    if rec.get("path") != path or rec.get("version") != version:
+        raise ValueError("%s@%s: doc JSON is for %s@%s" % (path, version, rec.get("path"), rec.get("version")))
+    if not isinstance(rec.get("docs"), dict) or not isinstance(rec.get("license"), list):
+        raise ValueError("%s@%s: doc JSON lacks docs or license" % (path, version))
+    return rec
+
+
+def render_version(site, catalog, rec):
+    """Stage (b): one version's pages from its doc record, and its catalog
+    build entry (with the xo that made the docs and RENDERER). Reads no
+    module source and runs no xo."""
+    path, version = rec["path"], rec["version"]
+    found = [(f, s) for f, s in rec["license"]]
+    ok = lic.redistributable(found)
+    mod = catalog["modules"].setdefault(path, {"versions": [], "builds": {}})
+    if version not in mod["versions"]:
+        mod["versions"].append(version)
+    build = {"license": [s for _, s in found], "docs": ok, "packages": [], "xo": rec.get("xo", ""), "renderer": RENDERER}
+    mod["builds"][version] = build
+    latest = paths.latest(mod["versions"])
+    saved = dict(render.BUILD)
+    if rec.get("xo"):
+        # "Generated ... with Xo X": the xo that ran `xo doc`, not this run's
+        render.BUILD["xo"] = rec["xo"]
+    try:
+        _render_pages(site, path, version, latest, found, ok, rec["docs"], build)
+    finally:
+        render.BUILD.clear()
+        render.BUILD.update(saved)
+
+
+def _render_pages(site, path, version, latest, found, ok, docs, build):
+    foot = module_footer(path, version, found)
+    if not ok:
+        write(site, render.href(path, version)[1:], render.page(
+            "%s@%s" % (path, version), render.no_license_body(path, version, found), foot=foot))
+        return
     build["packages"] = sorted(docs)
     symbols = {}
 
@@ -214,7 +271,130 @@ def build_version(tool, site, catalog, path, version):
                     for r in sorted(docs))]
         write(site, render.href(path, version)[1:], render.page("%s@%s" % (path, version), "\n".join(body), foot=foot))
     build["symbols"] = symbols
+
+
+def build_version(tool, site, catalog, path, version):
+    """Both stages for one version: the doc JSON stored at doc_rel next to
+    the pages, then the pages. Returns False when the fetch failed."""
+    rec = gather(tool, path, version)
+    if rec is None:
+        return False
+    write(site, doc_rel(path, version), json.dumps(rec, sort_keys=True, separators=(",", ":")))
+    render_version(site, catalog, rec)
     return True
+
+
+# The SDK repositories a --rebuild may name by their short name.
+SDKS = ("aws", "azure", "gcp", "openai")
+
+
+def select_versions(catalog, selector, stage, stale, xo=""):
+    """The (path, version) pairs a rebuild takes from the catalog, sorted:
+    selector is "all", an SDK's short name (SDKS: its repository's modules)
+    or a module path pattern (fnmatch, `*` crosses `/`). With stale, only
+    builds an older renderer made (render) or, for a full rebuild, also
+    those whose docs an older xo than xo made."""
+    if selector == "all":
+        match = lambda p: True
+    elif selector in SDKS:
+        root = "github.com/xo-lang/" + selector
+        match = lambda p: p == root or p.startswith(root + "/")
+    else:
+        match = lambda p: fnmatch.fnmatchcase(p, selector)
+    out = []
+    for path in sorted(catalog.get("modules", {})):
+        if not match(path):
+            continue
+        builds = catalog["modules"][path].get("builds", {})
+        for v in sorted(builds, key=paths.version_key):
+            b = builds[v] or {}
+            if stale:
+                old = b.get("renderer", 0) < RENDERER
+                if stage == "full" and xo and b.get("xo") != xo:
+                    old = True
+                if not old:
+                    continue
+            out.append((path, v))
+    return out
+
+
+def shard_of(items, spec):
+    """items[i::n] for spec "I/N" (0 <= I < N), all of them for ""."""
+    if not spec:
+        return items
+    i, _, n = spec.partition("/")
+    i, n = int(i), int(n)
+    if not 0 <= i < n:
+        raise ValueError("--shard %r: want I/N with 0 <= I < N" % spec)
+    return items[i::n]
+
+
+def load_doc(source, path, version):
+    """A version's stored doc JSON from source: the published site's base
+    URL or a site directory."""
+    rel = doc_rel(path, version)
+    if source.startswith(("https://", "http://")):
+        rec = json.loads(http_get(source.rstrip("/") + "/" + urllib.parse.quote(rel)).decode("utf-8"))
+    else:
+        with open(os.path.join(source, *rel.split("/")), encoding="utf-8") as f:
+            rec = json.load(f)
+    return check_doc(rec, path, version)
+
+
+PARTS = "_parts"
+
+
+def rebuild(todo, stage, site, catalog, tool=None, docs=""):
+    """Rebuilds the versions todo: stage "full" runs both stages (fetch and
+    xo doc, then render), "render" only stage (b) from each version's
+    stored doc JSON at docs. Returns (catalog part, failed): the part holds
+    the rebuilt versions' catalog entries only, for finish_parts."""
+    part = {"schema": 1, "modules": {}}
+    failed = []
+    for path, version in todo:
+        try:
+            if stage == "full":
+                ok = build_version(tool, site, catalog, path, version)
+            else:
+                render_version(site, catalog, load_doc(docs, path, version))
+                ok = True
+        except Exception as e:
+            print("rebuild %s@%s: %s" % (path, version, e), file=sys.stderr)
+            ok = False
+        if not ok:
+            failed.append(path + "@" + version)
+            continue
+        m = part["modules"].setdefault(path, {"versions": [], "builds": {}})
+        m["versions"].append(version)
+        m["builds"][version] = catalog["modules"][path]["builds"][version]
+    return part, failed
+
+
+def write_part(site, name, part):
+    write(site, "%s/%s.json" % (PARTS, name), json.dumps(part, sort_keys=True, separators=(",", ":")))
+
+
+def finish_parts(site, catalog):
+    """Folds every shard's catalog part (site/_parts/*.json) into catalog,
+    removes the parts and writes the catalog wide pages (finish). Returns
+    the modules touched."""
+    d = os.path.join(site, PARTS)
+    touched = set()
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        with open(os.path.join(d, name), encoding="utf-8") as f:
+            part = json.load(f)
+        for path, m in part.get("modules", {}).items():
+            mod = catalog["modules"].setdefault(path, {"versions": [], "builds": {}})
+            for v in m.get("versions", []):
+                if v not in mod["versions"]:
+                    mod["versions"].append(v)
+            mod["builds"].update(m.get("builds", {}))
+            touched.add(path)
+        os.remove(os.path.join(d, name))
+    if os.path.isdir(d):
+        os.rmdir(d)
+    finish(site, catalog, touched)
+    return touched
 
 
 def module_footer(path, version, found):
@@ -377,10 +557,51 @@ def finish(site, catalog, touched):
     write(site, "search/index.json", json.dumps({"schema": 1, "packages": search}, sort_keys=True, separators=(",", ":")))
 
 
+def build_date():
+    return os.environ.get("PKGSITE_BUILD_DATE") or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+def main_rebuild(ap, a):
+    """--rebuild (one shard of it) and --finish-parts: never the feed, its
+    position or std."""
+    if a.module or a.std or a.advance or a.max:
+        ap.error("--rebuild and --finish-parts take no --module, --std, --advance or --max")
+    if a.rebuild and a.finish_parts:
+        ap.error("--rebuild and --finish-parts are separate jobs")
+    render.BUILD["date"] = build_date()
+    catalog = load_catalog(a.catalog)
+    os.makedirs(a.site, exist_ok=True)
+    if a.finish_parts:
+        touched = finish_parts(a.site, catalog)
+        print("finished %d module(s); catalog has %d" % (len(touched), len(catalog["modules"])))
+        return 0
+    if not catalog["modules"]:
+        ap.error("--rebuild: the catalog (--catalog) is empty or missing")
+    tool = None
+    if a.stage == "full":
+        if not a.xo or not a.work:
+            ap.error("--stage full needs --xo and --work")
+        if not a.sumdb and not a.no_verify:
+            ap.error("--sumdb (or XO_SUMDB) is required for --stage full")
+        tool = xotool.Tool(a.xo, a.work, a.proxy, "off" if a.no_verify else a.sumdb, a.sandbox)
+        render.BUILD["xo"] = tool.version()
+    try:
+        todo = shard_of(select_versions(catalog, a.rebuild, a.stage, a.stale, render.BUILD.get("xo", "")), a.shard)
+    except ValueError as e:
+        ap.error(str(e))
+    part, failed = rebuild(todo, a.stage, a.site, catalog, tool, a.docs)
+    write_part(a.site, "shard-" + (a.shard.replace("/", "-of-") or "all"), part)
+    for key in failed[:20]:
+        print("::warning::rebuild %s failed" % key)
+    print("rebuilt %d of %d version(s) (%s, stage %s%s), %d failed" % (
+        len(todo) - len(failed), len(todo), a.rebuild, a.stage, ", shard " + a.shard if a.shard else "", len(failed)))
+    return 1 if todo and len(failed) == len(todo) else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--xo", required=True, help="the released xo binary")
-    ap.add_argument("--work", required=True, help="scratch directory (module cache, xo's HOME)")
+    ap.add_argument("--xo", default="", help="the released xo binary (not needed for --stage render or --finish-parts)")
+    ap.add_argument("--work", default="", help="scratch directory (module cache, xo's HOME)")
     ap.add_argument("--site", required=True, help="output directory")
     ap.add_argument("--state", default="state", help="directory of position.json")
     ap.add_argument("--feed", default="https://index.xolang.org/index", help="index feed URL, a JSON lines file, or none")
@@ -393,7 +614,20 @@ def main(argv=None):
     ap.add_argument("--std", action="store_true", help="render the xo's std")
     ap.add_argument("--advance", action="store_true", help="write the new feed position to --state")
     ap.add_argument("--max", type=int, default=0, help="build at most this many versions this run (0: no limit); the position stops at the last one taken")
+    ap.add_argument("--rebuild", default="", metavar="SELECTOR",
+                    help="rebuild versions the catalog already has: all, an SDK (%s) or a module path pattern; never moves the feed position" % ", ".join(SDKS))
+    ap.add_argument("--stage", choices=["render", "full"], default="render",
+                    help="with --rebuild: render (HTML from the stored doc JSON, no xo) or full (fetch, xo doc, render)")
+    ap.add_argument("--stale", action="store_true", help="with --rebuild: only versions an older renderer (or, full, an older xo) made")
+    ap.add_argument("--shard", default="", metavar="I/N", help="with --rebuild: this job's share, every Nth version from the Ith")
+    ap.add_argument("--docs", default="https://pkg.xolang.org", help="with --stage render: where the stored doc JSON is (site URL or directory)")
+    ap.add_argument("--finish-parts", action="store_true",
+                    help="fold the shards' catalog parts in --site into --catalog and write the catalog wide pages")
     a = ap.parse_args(argv)
+    if a.rebuild or a.finish_parts:
+        return main_rebuild(ap, a)
+    if not a.xo or not a.work:
+        ap.error("--xo and --work are required")
 
     fetching = not (a.std and not a.module and a.feed == "none")
     if fetching and not a.sumdb and not a.no_verify:
@@ -402,7 +636,7 @@ def main(argv=None):
         ap.error("--sumdb off: use --no-verify for local tests")
     tool = xotool.Tool(a.xo, a.work, a.proxy, "off" if a.no_verify else a.sumdb, a.sandbox)
     render.BUILD["xo"] = tool.version()
-    render.BUILD["date"] = os.environ.get("PKGSITE_BUILD_DATE") or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    render.BUILD["date"] = build_date()
     catalog = load_catalog(a.catalog)
     os.makedirs(a.site, exist_ok=True)
     pos_file = os.path.join(a.state, "position.json")
