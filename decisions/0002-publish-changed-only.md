@@ -27,10 +27,14 @@ trusted). A listing that is not JSON stops the publish before any put.
 
 - A retried publish, and a rebuild whose `_doc` JSON is unchanged, sends
   only what differs; the log line says how many pages were unchanged.
-- Each rendered page carries the build day ("Generated ... on DAY"), so
-  a rebuild on a later day still sends every HTML page; only same-day
-  retries and unchanged JSON are skipped. Taking the day from the
-  version's record instead would make render-only rebuilds byte-stable.
+- Only the home page says when the site was built ("Generated ... on
+  DAY"); a version's pages, a module's versions page and the std pages
+  carry no day, so a page whose content did not change is the same bytes
+  on a later rebuild. Measured on the 2164 versions of 2026-11-12: two
+  render rebuilds with build days 2026-11-12 and 2026-11-13 made 5733
+  files each and differed in index.html only; publishing the second
+  against a bucket holding the first sends 3 files (search/index.json,
+  index.html, catalog.json) and skips 5730 pages.
 - One listing call per publish (about 8 pages of 1000 keys).
 
 ## Alternatives

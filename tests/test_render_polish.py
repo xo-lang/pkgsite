@@ -81,5 +81,26 @@ class FooterTest(unittest.TestCase):
         self.assertIn('<header class="top"><div class="wrap">', html)
 
 
+class BuildDayTest(unittest.TestCase):
+    """Only the home page carries the build day, so a version's page is the
+    same bytes when it is rebuilt on a later day (decision 0002)."""
+
+    def setUp(self):
+        self.saved = dict(render.BUILD)
+
+    def tearDown(self):
+        render.BUILD.clear()
+        render.BUILD.update(self.saved)
+
+    def test_day_only_when_dated(self):
+        render.BUILD.update({"xo": "0.49.1", "date": "2026-11-12"})
+        self.assertEqual(render.generated_line("m@v1.0.0"), "Generated from m@v1.0.0 with Xo 0.49.1.")
+        self.assertEqual(render.generated_line("x", dated=True), "Generated from x with Xo 0.49.1 on 2026-11-12.")
+        a = render.page("t", "b")
+        render.BUILD["date"] = "2026-11-13"
+        self.assertEqual(render.page("t", "b"), a)
+        self.assertIn("on 2026-11-13", render.page("t", "b", dated=True))
+
+
 if __name__ == "__main__":
     unittest.main()

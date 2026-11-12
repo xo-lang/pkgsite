@@ -552,7 +552,7 @@ def finish(site, catalog, touched):
     if std_items:
         body += "<h2 id=\"std\">Standard library (Xo %s)</h2><ul class=\"mods\">%s</ul>" % (render.esc(std["version"][1:]), std_items)
     body += "<h2 id=\"modules\">Modules</h2><ul class=\"mods\">%s</ul></div>" % ("".join(items) or "<li>none yet</li>")
-    write(site, "index.html", render.page("pkg.xolang.org", body, "Documentation for Xo's standard library and published modules.", head=SEARCH_SCRIPT))
+    write(site, "index.html", render.page("pkg.xolang.org", body, "Documentation for Xo's standard library and published modules.", head=SEARCH_SCRIPT, dated=True))
     write(site, "catalog.json", json.dumps(catalog, sort_keys=True, separators=(",", ":")))
     write(site, "search/index.json", json.dumps({"schema": 1, "packages": search}, sort_keys=True, separators=(",", ":")))
 
