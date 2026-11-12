@@ -39,7 +39,9 @@ jobs:
     outputs:
       built: ${{ steps.build.outputs.built }}
     env:
-      XO_VERSION: ${{ vars.XO_VERSION || 'v0.46.0' }}
+      XO_VERSION: ${{ vars.XO_VERSION || 'v0.49.1' }}
+      # versions built per run; the rest wait for the next run (the job has 60 minutes)
+      PKGSITE_MAX: ${{ vars.PKGSITE_MAX || '400' }}
       XO_SUMDB: ${{ vars.XO_SUMDB }}
       MODULES: ${{ inputs.modules }}
       STD: ${{ inputs.std }}
@@ -61,7 +63,7 @@ jobs:
             exit 0
           fi
           set -- --xo "$RUNNER_TEMP/xo/bin/xo" --work "$RUNNER_TEMP/work" --site site --state state \
-            --catalog https://pkg.xolang.org/catalog.json --sandbox unshare --advance
+            --catalog https://pkg.xolang.org/catalog.json --sandbox unshare --advance --max "$PKGSITE_MAX"
           # --sandbox unshare runs xo doc with no network: an unprivileged
           # network namespace, else sudo's (xo dropped back to this user);
           # the build fails when neither works
