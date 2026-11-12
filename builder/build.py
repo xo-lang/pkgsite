@@ -26,9 +26,12 @@ version lists and search index cover everything. The new position goes to
 import argparse
 import datetime
 import fnmatch
+import http.client
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -329,12 +332,28 @@ def shard_of(items, spec):
     return items[i::n]
 
 
+# seconds to wait before reading a stored doc JSON again
+DOC_RETRY_WAITS = (2, 10)
+SLEEP = time.sleep
+
+
 def load_doc(source, path, version):
     """A version's stored doc JSON from source: the published site's base
     URL or a site directory."""
     rel = doc_rel(path, version)
     if source.startswith(("https://", "http://")):
-        rec = json.loads(http_get(source.rstrip("/") + "/" + urllib.parse.quote(rel)).decode("utf-8"))
+        url = source.rstrip("/") + "/" + urllib.parse.quote(rel)
+        # a dropped connection or a cut short body is asked again (run
+        # 43308210470: "Remote end closed connection without response" and
+        # "Unterminated string" for two of 2164, both whole when read again)
+        for wait in DOC_RETRY_WAITS + (None,):
+            try:
+                rec = json.loads(http_get(url).decode("utf-8"))
+                break
+            except (OSError, http.client.HTTPException, ValueError) as e:
+                if wait is None or (isinstance(e, urllib.error.HTTPError) and e.code == 404):
+                    raise
+                SLEEP(wait)
     else:
         with open(os.path.join(source, *rel.split("/")), encoding="utf-8") as f:
             rec = json.load(f)
