@@ -11,6 +11,9 @@
 #                 nor in the public run log)
 #   R2_BUCKET     default xo-pkgsite
 #   DRY_RUN=1     print each upload instead of running it (no credentials needed)
+#   PUBLISH_ALL=1 send every page, not only those that differ from the bucket
+#   PUBLISH_LISTING  a list-objects-v2 [key, etag] listing to compare against
+#                 instead of asking the bucket
 #
 # Order: every page first, then search/index.json, index.html and last
 # catalog.json. The next build reads the published catalog.json to know
@@ -81,6 +84,23 @@ pages=$(printf '%s\n' "$list" | while IFS= read -r f; do
   case " $last " in (*" $f "*) continue ;; esac
   printf '%s\n' "$f"
 done)
+# only the pages whose bytes differ from the bucket's (decision 0002):
+# one listing of the bucket, then each page's MD5 against its object's
+# ETag. PUBLISH_ALL=1 sends every page; PUBLISH_LISTING names a listing
+# file to use instead of asking the bucket (the tests, a dry run).
+total=$(printf '%s\n' "$pages" | grep -c . || true)
+if [ "${PUBLISH_ALL:-0}" != 1 ] && [ -n "$pages" ]; then
+  listing=${PUBLISH_LISTING:-}
+  if [ -z "$listing" ] && [ "${DRY_RUN:-0}" != 1 ]; then
+    listing=$(mktemp)
+    aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket "$bucket" \
+      --query 'Contents[].[Key,ETag]' --output json > "$listing"
+  fi
+  if [ -n "$listing" ]; then
+    pages=$(printf '%s\n' "$pages" | python3 -I "$(dirname "$0")/changed.py" "$site" "$listing")
+  fi
+fi
+skipped=$((total - $(printf '%s\n' "$pages" | grep -c . || true)))
 if [ "${DRY_RUN:-0}" = 1 ] || [ "${PUBLISH_JOBS:-16}" -le 1 ]; then
   while IFS= read -r f; do
     [ -n "$f" ] && put "$f"
@@ -107,4 +127,4 @@ fi
 for f in $last; do
   [ -f "$site/$f" ] && put "$f"
 done
-echo "publish-r2: $n file(s) to $bucket"
+echo "publish-r2: $n file(s) to $bucket, $skipped page(s) unchanged"

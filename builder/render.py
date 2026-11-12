@@ -202,19 +202,23 @@ def inline_code(text):
     return "".join(esc(x) if i % 2 == 0 else "<code>%s</code>" % esc(x) for i, x in enumerate(parts))
 
 
-def generated_line(what):
-    """"Generated from WHAT with Xo X.Y.Z on DAY", the parts BUILD has."""
+def generated_line(what, dated=False):
+    """"Generated from WHAT with Xo X.Y.Z", the parts BUILD has, and " on
+    DAY" only when dated: a version's pages carry no build day, so a page
+    whose content did not change is the same bytes on a later rebuild and
+    publish skips it (decision 0002). Only the home page, sent on every
+    publish anyway, says when the site was built."""
     s = "Generated from %s" % what
     if BUILD.get("xo"):
         s += " with Xo %s" % BUILD["xo"]
-    if BUILD.get("date"):
+    if dated and BUILD.get("date"):
         s += " on %s" % BUILD["date"]
     return s + "."
 
 
-def page(title, body, description="", foot=None, head=""):
+def page(title, body, description="", foot=None, head="", dated=False):
     if foot is None:
-        foot = footer(generated=generated_line("the published catalog") if BUILD.get("date") else "")
+        foot = footer(generated=generated_line("the published catalog", dated) if BUILD.get("date") else "")
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"

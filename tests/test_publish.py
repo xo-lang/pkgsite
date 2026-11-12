@@ -1,6 +1,8 @@
 """publish-r2.sh with DRY_RUN=1: the upload order, content types, cache
 headers and the file name guard, with no credentials and no network."""
 
+import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -66,7 +68,13 @@ class PublishTest(unittest.TestCase):
 
 
 FAKE_AWS = """#!/bin/sh
-# records each put-object as KEY<TAB>CONTENT-TYPE<TAB>CACHE; fails for $FAIL_KEY
+# records each put-object as KEY<TAB>CONTENT-TYPE<TAB>CACHE; fails for $FAIL_KEY;
+# list-objects-v2 prints $FAKE_LISTING (else an empty bucket's null)
+if [ "$2" = list-objects-v2 ]; then
+  echo list >> "$AWS_LOG.calls"
+  if [ -n "$FAKE_LISTING" ]; then cat "$FAKE_LISTING"; else echo null; fi
+  exit 0
+fi
 key="" ct="" cc=""
 while [ $# -gt 0 ]; do
   case $1 in --key) key=$2; shift ;; --content-type) ct=$2; shift ;; --cache-control) cc=$2; shift ;; esac
@@ -85,7 +93,7 @@ class ParallelPublishTest(unittest.TestCase):
     FILES = ["catalog.json", "index.html", "search/index.json", "_doc/example.com/m/@v/v1.0.0.json"] + [
         "example.com/m@v1.%d.0/index.html" % i for i in range(40)]
 
-    def publish(self, d, fail=""):
+    def publish(self, d, fail="", **env):
         bin_ = os.path.join(d, "bin")
         os.makedirs(bin_)
         with open(os.path.join(bin_, "aws"), "w") as f:
@@ -96,7 +104,7 @@ class ParallelPublishTest(unittest.TestCase):
         log = os.path.join(d, "log")
         r = run(site, DRY_RUN="0", PATH=bin_ + ":" + os.environ.get("PATH", "/usr/bin:/bin"), AWS_LOG=log, FAIL_KEY=fail,
                 R2_ACCESS_KEY_ID="k", R2_SECRET_ACCESS_KEY="s", R2_ENDPOINT="https://acct.r2.cloudflarestorage.com",
-                PUBLISH_JOBS="8")
+                PUBLISH_JOBS="8", **env)
         rows = []
         if os.path.exists(log):
             with open(log) as f:
@@ -122,6 +130,72 @@ class ParallelPublishTest(unittest.TestCase):
             keys = [k for k, _, _ in rows]
             self.assertNotIn("catalog.json", keys)
             self.assertNotIn("index.html", keys)
+
+
+class ChangedOnlyTest(unittest.TestCase):
+    """Pages whose MD5 equals the bucket's ETag are not sent again; the
+    last three files always are."""
+
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory()
+        self.d = self.t.name
+        self.p = ParallelPublishTest()
+
+    def tearDown(self):
+        self.t.cleanup()
+
+    def listing(self, rows):
+        path = os.path.join(self.d, "listing.json")
+        with open(path, "w") as f:
+            json.dump(rows, f)
+        return path
+
+    def test_unchanged_pages_skipped(self):
+        x = hashlib.md5(b"x").hexdigest()
+        rows = [["example.com/m@v1.%d.0/index.html" % i, '"%s"' % x] for i in range(30)]
+        rows.append(["example.com/m@v1.30.0/index.html", '"%s"' % hashlib.md5(b"old").hexdigest()])
+        rows.append(["example.com/m@v1.31.0/index.html", '"%s-2"' % x])  # multipart: sent again
+        rows.append(["catalog.json", '"%s"' % x])
+        r, rows_ = self.p.publish(self.d, FAKE_LISTING=self.listing(rows))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        keys = [k for k, _, _ in rows_]
+        sent = sorted(k for k in keys if k.startswith("example.com/"))
+        self.assertEqual(sent, sorted("example.com/m@v1.%d.0/index.html" % i for i in range(30, 40)))
+        self.assertIn("_doc/example.com/m/@v/v1.0.0.json", keys)
+        self.assertEqual(keys[-3:], ["search/index.json", "index.html", "catalog.json"])
+        self.assertIn("30 page(s) unchanged", r.stdout)
+
+    def test_publish_all_skips_the_listing(self):
+        x = hashlib.md5(b"x").hexdigest()
+        rows = [["example.com/m@v1.%d.0/index.html" % i, '"%s"' % x] for i in range(40)]
+        r, rows_ = self.p.publish(self.d, FAKE_LISTING=self.listing(rows), PUBLISH_ALL="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(rows_), len(ParallelPublishTest.FILES))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "log.calls")))
+
+    def test_nothing_changed(self):
+        x = hashlib.md5(b"x").hexdigest()
+        rows = [[k, '"%s"' % x] for k in ParallelPublishTest.FILES]
+        r, rows_ = self.p.publish(self.d, FAKE_LISTING=self.listing(rows))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([k for k, _, _ in rows_], ["search/index.json", "index.html", "catalog.json"])
+
+    def test_a_bad_listing_stops_before_any_upload(self):
+        path = os.path.join(self.d, "listing.json")
+        with open(path, "w") as f:
+            f.write("not json")
+        r, rows_ = self.p.publish(self.d, FAKE_LISTING=path)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(rows_, [])
+
+    def test_dry_run_with_a_listing(self):
+        site = os.path.join(self.d, "site")
+        make(site, ["catalog.json", "a.example/m@v1.0.0/index.html", "a.example/m@v1.1.0/index.html"])
+        x = hashlib.md5(b"x").hexdigest()
+        r = run(site, PUBLISH_LISTING=self.listing([["a.example/m@v1.0.0/index.html", '"%s"' % x]]))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        keys = [l.split("\t")[0][4:] for l in r.stdout.splitlines() if l.startswith("put ")]
+        self.assertEqual(keys, ["a.example/m@v1.1.0/index.html", "catalog.json"])
 
 
 if __name__ == "__main__":
