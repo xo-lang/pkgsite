@@ -224,3 +224,51 @@ class FeedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunTodoTest(unittest.TestCase):
+    TODO = [("a.org/m", "v1.0.0", "2026-11-12T01:00:00Z"), ("a.org/m", "v1.1.0", "2026-11-12T01:00:01Z"),
+            ("a.org/n", "v1.0.0", "2026-11-12T01:00:02Z"), ("a.org/o", "v1.0.0", "2026-11-12T01:00:03Z")]
+
+    def run_with(self, results, max_builds=0, failures=None):
+        calls = []
+
+        def one(p, v):
+            calls.append(p + "@" + v)
+            return results.get(p + "@" + v, True)
+        r = build.run_todo(self.TODO, "2026-11-12T00:00:00Z", one, max_builds, failures or {})
+        return r, calls
+
+    def test_all_built(self):
+        r, calls = self.run_with({})
+        self.assertEqual(len(calls), 4)
+        self.assertEqual((r["built"], r["failed"], r["left"]), (4, 0, 0))
+        self.assertEqual(r["position"], "2026-11-12T01:00:03Z")
+        self.assertEqual(r["touched"], {"a.org/m", "a.org/n", "a.org/o"})
+
+    def test_max_stops_at_last_taken(self):
+        r, calls = self.run_with({}, max_builds=2)
+        self.assertEqual(calls, ["a.org/m@v1.0.0", "a.org/m@v1.1.0"])
+        self.assertEqual((r["built"], r["left"]), (2, 2))
+        self.assertEqual(r["position"], "2026-11-12T01:00:01Z")
+
+    def test_already_built_does_not_count(self):
+        r, calls = self.run_with({"a.org/m@v1.0.0": None, "a.org/m@v1.1.0": None}, max_builds=2)
+        self.assertEqual(r["built"], 2)
+        self.assertEqual(r["position"], "2026-11-12T01:00:03Z")
+
+    def test_failure_holds_position(self):
+        r, _ = self.run_with({"a.org/m@v1.1.0": False})
+        self.assertEqual((r["built"], r["failed"]), (3, 1))
+        self.assertEqual(r["position"], "2026-11-12T01:00:01Z")
+        self.assertEqual(r["failures"], {"a.org/m@v1.1.0": 1})
+
+    def test_success_clears_failure(self):
+        r, _ = self.run_with({}, failures={"a.org/m@v1.1.0": 2})
+        self.assertEqual(r["failures"], {})
+
+    def test_gives_up_after_max_failures(self):
+        r, _ = self.run_with({"a.org/m@v1.1.0": False}, failures={"a.org/m@v1.1.0": build.MAX_FAILURES - 1})
+        self.assertEqual(r["gave_up"], ["a.org/m@v1.1.0"])
+        self.assertEqual(r["failures"], {})
+        self.assertEqual(r["position"], "2026-11-12T01:00:03Z")

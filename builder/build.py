@@ -74,6 +74,50 @@ def read_feed(source, since):
     return out
 
 
+# A version that fails this many runs in a row is skipped, so one bad
+# version cannot hold the feed position forever.
+MAX_FAILURES = 3
+
+
+def run_todo(todo, since, build_one, max_builds, failures):
+    """Builds the feed entries in order. build_one(path, version) returns
+    True (built), False (failed) or None (already built). At most
+    max_builds builds run (0: no limit); the position then stops at the
+    last entry taken, and the feed's since is inclusive, so the next run
+    starts there and the catalog skips what is built. A failed version
+    holds the position at its timestamp, so the next run retries it,
+    until it has failed MAX_FAILURES runs; failures counts them by
+    path@version."""
+    failures = dict(failures)
+    touched, gave_up = set(), []
+    built = failed = 0
+    last, hold, left = since, None, 0
+    for i, (p, v, ts) in enumerate(todo):
+        if max_builds and built + failed >= max_builds:
+            left = len(todo) - i
+            break
+        ok = build_one(p, v)
+        key = p + "@" + v
+        if ok is True:
+            built += 1
+            touched.add(p)
+            failures.pop(key, None)
+        elif ok is False:
+            failed += 1
+            n = failures.get(key, 0) + 1
+            if n >= MAX_FAILURES:
+                failures.pop(key, None)
+                gave_up.append(key)
+            else:
+                failures[key] = n
+                if hold is None and ts:
+                    hold = ts
+        if ts and ts > last:
+            last = ts
+    position = hold if hold is not None and hold < last else last
+    return {"touched": touched, "built": built, "failed": failed, "left": left, "position": position, "failures": failures, "gave_up": gave_up}
+
+
 def load_catalog(source):
     empty = {"schema": 1, "modules": {}}
     if not source:
@@ -289,7 +333,7 @@ function show(){
 document.addEventListener("DOMContentLoaded",function(){
   box=document.getElementById("search");q=document.getElementById("q");res=document.getElementById("results");all=document.getElementById("all");
   if(!box||!window.fetch)return;
-  fetch("/search/index.json").then(function(r){return r.json();}).then(function(j){data=j.packages||[];box.hidden=false;show();});
+  var u=new URLSearchParams(location.search).get("q");if(u)q.value=u;fetch("/search/index.json").then(function(r){return r.json();}).then(function(j){data=j.packages||[];box.hidden=false;show();});
   q.addEventListener("input",show);
   q.addEventListener("keydown",function(ev){if(ev.key==="Enter"){var a=res.querySelector("a");if(a){ev.preventDefault();location.href=a.href;}}else if(ev.key==="Escape"){q.value="";show();}});
   document.addEventListener("keydown",function(ev){if(ev.key==="/"&&document.activeElement!==q&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){var t=ev.target.tagName;if(t!=="INPUT"&&t!=="TEXTAREA"){ev.preventDefault();q.focus();}}});
@@ -348,6 +392,7 @@ def main(argv=None):
     ap.add_argument("--module", action="append", default=[], help="path@version to build instead of the feed")
     ap.add_argument("--std", action="store_true", help="render the xo's std")
     ap.add_argument("--advance", action="store_true", help="write the new feed position to --state")
+    ap.add_argument("--max", type=int, default=0, help="build at most this many versions this run (0: no limit); the position stops at the last one taken")
     a = ap.parse_args(argv)
 
     fetching = not (a.std and not a.module and a.feed == "none")
@@ -379,18 +424,13 @@ def main(argv=None):
     else:
         todo = read_feed(a.feed, since)
 
-    failed = 0
-    touched = set()
-    last = since
-    for p, v, ts in todo:
-        built = catalog["modules"].get(p, {}).get("builds", {}).get(v)
-        if built is None:
-            if build_version(tool, a.site, catalog, p, v):
-                touched.add(p)
-            else:
-                failed += 1
-        if ts and ts > last:
-            last = ts
+    def build_one(p, v):
+        if catalog["modules"].get(p, {}).get("builds", {}).get(v) is not None:
+            return None
+        return build_version(tool, a.site, catalog, p, v)
+
+    r = run_todo(todo, since, build_one, a.max, pos.get("failures", {}))
+    touched, failed, last = r["touched"], r["failed"], r["position"]
     if a.std:
         build_std(tool, a.site, catalog)
     finish(a.site, catalog, touched)
@@ -398,9 +438,14 @@ def main(argv=None):
         os.makedirs(a.state, exist_ok=True)
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with open(pos_file, "w", encoding="utf-8") as f:
-            json.dump({"since": last, "heartbeat": now}, f, indent=2, sort_keys=True)
+            state = {"since": last, "heartbeat": now}
+            if r["failures"]:
+                state["failures"] = r["failures"]
+            json.dump(state, f, indent=2, sort_keys=True)
             f.write("\n")
-    print("built %d version(s), %d failed, position %s" % (len(touched), failed, last))
+    for key in r["gave_up"]:
+        print("::warning::%s failed %d times; skipped" % (key, MAX_FAILURES))
+    print("built %d version(s) of %d module(s), %d failed, %d left for the next run, position %s" % (r["built"], len(touched), failed, r["left"], last))
     return 1 if failed and failed == len(todo) else 0
 
 
