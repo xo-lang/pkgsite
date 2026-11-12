@@ -6,11 +6,14 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 from . import paths
 
 DOC_TIMEOUT = 300
 GET_TIMEOUT = 900
+# seconds to wait before asking the proxy again after a 429
+RATE_LIMIT_WAITS = (15, 60)
 
 
 class Tool:
@@ -20,6 +23,7 @@ class Tool:
         self.proxy = proxy
         self.sumdb = sumdb
         self.sandbox = sandbox
+        self.sleep = time.sleep
         self.home = os.path.join(self.work, "home")
         self.modcache = os.path.join(self.work, "modcache")
         os.makedirs(self.home, exist_ok=True)
@@ -72,7 +76,12 @@ class Tool:
         os.makedirs(get)
         with open(os.path.join(get, "xo.mod"), "w") as f:
             f.write("module pkgsite.invalid/get\nedition preview\n")
-        r = self.run(["get", path + "@" + version], get, False, GET_TIMEOUT)
+        for wait in RATE_LIMIT_WAITS + (None,):
+            r = self.run(["get", path + "@" + version], get, False, GET_TIMEOUT)
+            if os.path.isfile(os.path.join(d, "xo.mod")) or wait is None or b"429 Too Many Requests" not in (r.stderr or b""):
+                break
+            # the proxy's rate limit: wait and ask again
+            self.sleep(wait)
         if not os.path.isfile(os.path.join(d, "xo.mod")):
             raise RuntimeError("xo get %s@%s: %s" % (path, version, _tail(r)))
         return d
