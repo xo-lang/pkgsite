@@ -212,7 +212,9 @@ jobs:
     needs: [build, rebuild-finish]
     if: ${{ !cancelled() && (needs.build.outputs.built == '1' || needs.rebuild-finish.outputs.built == '1') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # a full rebuild publishes every page (7897 files, 1 GB in run
+    # 43267540480, which did not finish in 30 minutes)
+    timeout-minutes: 120
     permissions:
       contents: read
     outputs:
@@ -222,6 +224,7 @@ jobs:
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
       R2_BUCKET: xo-pkgsite
+      PUBLISH_JOBS: 32
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
