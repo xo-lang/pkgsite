@@ -22,6 +22,23 @@ on:
         description: "render the xo release's std"
         type: boolean
         default: false
+      rebuild:
+        description: "rebuild published versions instead of the feed: all, an SDK (aws, azure, gcp, openai) or a module path pattern"
+        required: false
+        default: ""
+      stage:
+        description: "rebuild stage: render (HTML from the stored doc JSON, minutes) or full (fetch and xo doc again)"
+        type: choice
+        options: [render, full]
+        default: render
+      stale:
+        description: "rebuild only versions an older renderer (or, full, an older xo) made"
+        type: boolean
+        default: true
+      shards:
+        description: "rebuild jobs at once (1 to 16)"
+        required: false
+        default: "8"
 
 permissions:
   contents: read
@@ -32,6 +49,8 @@ concurrency:
 
 jobs:
   build:
+    # the feed (or --module, --std); a rebuild has its own jobs below
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.rebuild == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -86,13 +105,112 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  rebuild-plan:
+    # a rebuild (workflow_dispatch with rebuild set): the shard list. The
+    # whole workflow shares one concurrency group, so a rebuild never runs
+    # beside a feed build, and it never reads or writes state/position.json.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      n: ${{ steps.plan.outputs.n }}
+    env:
+      SHARDS: ${{ inputs.shards }}
+    steps:
+      - id: plan
+        run: |
+          case $SHARDS in ''|*[!0-9]*) echo "::error::shards must be 1 to 16, not $SHARDS"; exit 1 ;; esac
+          if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt 16 ]; then echo "::error::shards must be 1 to 16"; exit 1; fi
+          echo "n=$SHARDS" >> "$GITHUB_OUTPUT"
+          echo "shards=$(python3 -I -c 'import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$SHARDS")" >> "$GITHUB_OUTPUT"
+
+  rebuild:
+    # one shard: every Nth selected version. render reads each version's
+    # stored doc JSON from pkg.xolang.org and runs no xo; full fetches and
+    # runs xo doc (no network) again. Pages only: the catalog wide pages
+    # come from rebuild-finish.
+    needs: rebuild-plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.rebuild-plan.outputs.shards) }}
+    env:
+      XO_VERSION: ${{ vars.XO_VERSION || 'v0.49.1' }}
+      XO_SUMDB: ${{ vars.XO_SUMDB }}
+      REBUILD: ${{ inputs.rebuild }}
+      STAGE: ${{ inputs.stage }}
+      STALE: ${{ inputs.stale }}
+      SHARD: ${{ matrix.shard }}/${{ needs.rebuild-plan.outputs.n }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests
+        run: python3 -E -s -m unittest discover -s tests -t .
+      - name: Install xo
+        if: ${{ inputs.stage == 'full' }}
+        run: scripts/install-xo.sh "$XO_VERSION" "$RUNNER_TEMP/xo"
+      - name: Rebuild
+        run: |
+          set -- --site site --catalog https://pkg.xolang.org/catalog.json --rebuild "$REBUILD" --stage "$STAGE" --shard "$SHARD"
+          if [ "$STALE" = "true" ]; then set -- "$@" --stale; fi
+          if [ "$STAGE" = "full" ]; then
+            [ -n "$XO_SUMDB" ] || { echo "::error::the repository variable XO_SUMDB is not set"; exit 1; }
+            set -- "$@" --xo "$RUNNER_TEMP/xo/bin/xo" --work "$RUNNER_TEMP/work" --sandbox unshare
+          fi
+          python3 -E -s -m builder.build "$@"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rebuild-${{ matrix.shard }}
+          path: site
+          if-no-files-found: ignore
+          retention-days: 3
+
+  rebuild-finish:
+    # the shards' pages as one site, their catalog parts folded into the
+    # published catalog, and the catalog wide pages (home, versions, search)
+    needs: rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      built: ${{ steps.finish.outputs.built }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rebuild-*
+          merge-multiple: true
+          path: site
+      - id: finish
+        run: |
+          python3 -E -s -m builder.build --site site --catalog https://pkg.xolang.org/catalog.json --finish-parts
+          if [ -f site/catalog.json ]; then echo "built=1" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site
+          path: site
+          if-no-files-found: ignore
+          retention-days: 7
+
   publish:
     # the build's pages to R2. No module source here: it checks out this
     # repository for the upload script only and downloads the artifact.
     # Only from main, never for a pull request (the workflow has no
     # pull_request trigger, and forks get no secrets).
-    needs: build
-    if: needs.build.outputs.built == '1' && github.ref == 'refs/heads/main'
+    # (a feed build's or a rebuild's: one of the two runs, the other is skipped)
+    needs: [build, rebuild-finish]
+    if: ${{ !cancelled() && (needs.build.outputs.built == '1' || needs.rebuild-finish.outputs.built == '1') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -132,7 +250,8 @@ jobs:
     # reads only position.json from the build, never the pages.
     # a scheduled run, or a dispatched one that read the feed (no modules
     # named): both advance the position
-    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.modules == '')) && needs.build.result == 'success' && needs.publish.result != 'failure' }}
+    # (never a rebuild: the build job is skipped then)
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.modules == '' && inputs.rebuild == '')) && needs.build.result == 'success' && needs.publish.result != 'failure' }}
     needs: [build, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
